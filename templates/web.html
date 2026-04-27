@@ -94,17 +94,17 @@
         <div class="control-group">
             <label>Chế độ hoạt động:</label>
             <select id="main_mode" onchange="updateUI()">
-                <option value="art">Vẽ Hình ảnh / Nghệ thuật</option>
-                <option value="pcb">Vẽ Mạch PCB (Tô đặc)</option>
+                <option value="art">Vẽ hình ảnh / Nghệ thuật</option>
+                <option value="pcb">Vẽ Mạch PCB </option>
             </select>
         </div>
 
         <div class="control-group" id="grp_style">
             <label>Kiểu vẽ:</label>
             <select id="art_style" onchange="updateUI()">
-                <option value="edge">Vẽ Biên (Sắc nét)</option>
-                <option value="sketch">Phác thảo (Gạch chéo)</option>
-                <option value="spiral">Xoắn ốc (Chân dung)</option>
+                <option value="edge">Vẽ biên </option>
+                <option value="sketch">Phác thảo </option>
+                <option value="spiral">Xoắn ốc </option>
             </select>
         </div>
 
@@ -136,7 +136,7 @@
         </div>
 
         <div class="control-group">
-            <label>Độ sắc nét (Threshold): <span id="thVal" class="val">127</span></label>
+            <label>Độ sắc nét : <span id="thVal" class="val">127</span></label>
             <input type="range" id="threshold" min="0" max="255" value="127" oninput="updateVal('thVal', this.value)" onchange="triggerUpdate()">
         </div>
 
