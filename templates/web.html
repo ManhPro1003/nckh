@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>CNC WEB NCKH 2026</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1e1e1e; color: #fff; margin: 0; display: flex; height: 100vh; overflow: hidden;}
+        .sidebar { width: 380px; background-color: #252526; padding: 25px; border-right: 1px solid #333; overflow-y: auto; z-index: 10;}
+        .sidebar h2 { color: #00f2fe; text-align: center; font-size: 24px; border-bottom: 1px solid #444; padding-bottom: 15px; margin-top: 0; text-transform: uppercase;}
+        .main-content { flex: 1; display: flex; justify-content: center; align-items: center; background-color: #121212; position: relative;}
+        #preview-container { width: 90%; height: 90vh; border: 2px dashed #444; border-radius: 10px; background: #1a1a1a; overflow: hidden; cursor: grab; position: relative;}
+        #preview-container:active { cursor: grabbing; }
+        #pan-zoom-wrapper { transform-origin: 0 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center;}
+        .control-group { margin-bottom: 15px; background: #2d2d30; padding: 15px; border-radius: 8px; transition: 0.3s;}
+        label { display: block; font-weight: bold; font-size: 14px; color: #ccc; margin-bottom: 10px;}
+        select, input[type="number"], input[type="file"] { width: 100%; padding: 8px; background: #3c3c3c; border: 1px solid #555; color: white; border-radius: 4px; box-sizing: border-box;}
+        input[type="range"] { width: 100%; cursor: pointer; accent-color: #00f2fe;}
+        .val-display { float: right; color: #00f2fe; font-weight: bold;}
+        .btn { width: 100%; padding: 15px; background: linear-gradient(to right, #4facfe 0%, #00f2fe 100%); color: #000; border: none; font-weight: bold; font-size: 16px; border-radius: 8px; cursor: pointer; transition: 0.3s; margin-top: 10px;}
+        .btn:hover { opacity: 0.8; transform: scale(1.02);}
+        .btn-download { background: #28a745; display: none; color: white;}
+        .loading { display: none; position: absolute; top: 20px; left: 50%; transform: translateX(-50%); color: #00f2fe; font-weight: bold; background: rgba(0,0,0,0.7); padding: 10px 20px; border-radius: 20px; z-index: 100;}
+        .zoom-controls { position: absolute; bottom: 20px; right: 20px; display: flex; gap: 10px; z-index: 20;}
+        .zoom-controls button { background: #333; border: 1px solid #555; color: white; width: 40px; height: 40px; border-radius: 5px; cursor: pointer;}
+    </style>
+</head>
+<body>
+
+<div class="sidebar">
+    <h2>CNC WEB NCKH 2026</h2>
+    <form id="uploadForm">
+        <div class="control-group" style="border-left: 4px solid #00f2fe;">
+            <label>Chế độ hoạt động:</label>
+            <select id="main_mode" onchange="updateUI()">
+                <option value="art">Chế độ Vẽ Hình ảnh</option>
+                <option value="pcb">Chế độ Vẽ Mạch PCB</option>
+            </select>
+        </div>
+
+        <div class="control-group" id="grp_style">
+            <label>Kiểu nghệ thuật:</label>
+            <select id="art_style" onchange="updateUI()">
+                <option value="edge">Vẽ Biên (Logo/Vector)</option>
+                <option value="sketch">Vẽ Phác thảo (Gạch chéo)</option>
+                <option value="spiral">Vẽ Xoắn ốc (Chân dung)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label>Tải ảnh đầu vào:</label>
+            <input type="file" id="imageInput" accept="image/*" onchange="triggerUpdate()">
+        </div>
+
+        <div class="control-group">
+            <label>Kích thước chiều ngang mặc định (mm):</label>
+            <input type="number" id="targetWidth" value="100" min="10" onchange="triggerUpdate()">
+        </div>
+
+        <div class="control-group" style="border-left: 4px solid #ff007f;">
+            <label>Tỷ lệ phóng đại G-Code (%): <span id="gsVal" class="val-display">100</span></label>
+            <input type="range" id="g_scale" min="10" max="500" value="100" oninput="updateVal('gsVal', this.value)" onchange="triggerUpdate()">
+            <small style="color:#888;">Kéo để phóng to toàn bộ hình vẽ mà không làm vỡ nét.</small>
+        </div>
+
+        <div class="control-group" style="border-left: 4px solid #00ff00;">
+            <label>Z Nhấc bút (Lên) (mm):</label>
+            <input type="number" id="z_up" value="5.0" step="0.5" onchange="triggerUpdate()">
+            <label style="margin-top: 10px;">Z Hạ bút (Xuống) (mm):</label>
+            <input type="number" id="z_down" value="0.0" step="0.5" onchange="triggerUpdate()">
+        </div>
+
+        <div class="control-group" id="grp_pen_size" style="border-left: 4px solid #ffaa00;">
+            <label>Kích cỡ ngòi bút (mm): <span id="penVal" class="val-display">0.3</span></label>
+            <input type="range" id="pen_size" min="0.1" max="2.0" step="0.1" value="0.3" oninput="updateVal('penVal', this.value)" onchange="triggerUpdate()">
+        </div>
+
+        <div class="control-group" id="grp_threshold">
+            <label>Độ sắc nét (Threshold): <span id="threshVal" class="val-display">127</span></label>
+            <input type="range" id="threshold" min="0" max="255" value="127" oninput="updateVal('threshVal', this.value)" onchange="triggerUpdate()">
+        </div>
+
+        <div class="control-group" id="grp_smoothing">
+            <label>Làm mượt răng cưa: <span id="smoothVal" class="val-display">1.0</span></label>
+            <input type="range" id="smoothing" min="0.1" max="5.0" step="0.1" value="1.0" oninput="updateVal('smoothVal', this.value)" onchange="triggerUpdate()">
+        </div>
+
+        <div class="control-group" id="grp_density">
+            <label id="density_label">Mật độ nét: <span id="densityVal" class="val-display">30</span></label>
+            <input type="range" id="density" min="10" max="100" value="30" oninput="updateVal('densityVal', this.value)" onchange="triggerUpdate()">
+        </div>
+
+        <div class="control-group">
+            <label>Tốc độ vẽ (mm/phút): <span id="feedVal" class="val-display">1500</span></label>
+            <input type="range" id="feedrate" min="500" max="4000" step="100" value="1500" oninput="updateVal('feedVal', this.value)" onchange="triggerUpdate()">
+        </div>
+
+        <button type="button" class="btn btn-download" id="downloadBtn" onclick="downloadGcode()">TẢI XUỐNG G-CODE</button>
+    </form>
+</div>
+
+<div class="main-content">
+    <div class="loading" id="loadingIndicator">Đang tính toán đường chạy dao...</div>
+    <div id="preview-container">
+        <div id="pan-zoom-wrapper">
+            <div id="svg-content" style="color: #666; font-size: 20px;">Tải ảnh lên để xem kích thước thực</div>
+        </div>
+        <div class="zoom-controls">
+            <button onclick="manualZoom(1.2)">+</button>
+            <button onclick="manualZoom(0.8)">-</button>
+            <button onclick="resetZoom()">O</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let generatedGcode = "", debounceTimer;
+    
+    // --- LOGIC PAN & ZOOM ---
+    const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
+    let scale = 1, pointX = 0, pointY = 0, panning = false, startX = 0, startY = 0;
+    function setTransform() { wrapper.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`; }
+    container.addEventListener('mousedown', (e) => { e.preventDefault(); startX = e.clientX - pointX; startY = e.clientY - pointY; panning = true; });
+    container.addEventListener('mouseup', () => panning = false);
+    container.addEventListener('mouseleave', () => panning = false);
+    container.addEventListener('mousemove', (e) => { if (!panning) return; pointX = e.clientX - startX; pointY = e.clientY - startY; setTransform(); });
+    container.addEventListener('wheel', (e) => {
+        e.preventDefault(); const rect = container.getBoundingClientRect();
+        const xs = (e.clientX - rect.left - pointX) / scale, ys = (e.clientY - rect.top - pointY) / scale;
+        if (e.deltaY < 0) scale *= 1.15; else scale /= 1.15;
+        pointX = e.clientX - rect.left - xs * scale; pointY = e.clientY - rect.top - ys * scale; setTransform();
+    });
+    function manualZoom(factor) {
+        const rect = container.getBoundingClientRect();
+        const xs = (rect.width/2 - pointX) / scale, ys = (rect.height/2 - pointY) / scale;
+        scale *= factor; pointX = rect.width/2 - xs * scale; pointY = rect.height/2 - ys * scale; setTransform();
+    }
+    function resetZoom() { scale = 1; pointX = 0; pointY = 0; setTransform(); }
+
+    function updateVal(id, val) { document.getElementById(id).innerText = val; }
+    
+    function updateUI() {
+        const mode = document.getElementById('main_mode').value;
+        const style = document.getElementById('art_style').value;
+        
+        document.getElementById('grp_style').style.display = 'none';
+        document.getElementById('grp_threshold').style.display = 'none';
+        document.getElementById('grp_smoothing').style.display = 'none';
+        document.getElementById('grp_density').style.display = 'none';
+        document.getElementById('grp_pen_size').style.display = 'block';
+
+        if (mode === 'pcb') {
+            document.getElementById('grp_threshold').style.display = 'block';
+        } else {
+            document.getElementById('grp_style').style.display = 'block';
+            if (style === 'edge') { 
+                document.getElementById('grp_threshold').style.display = 'block'; 
+                document.getElementById('grp_smoothing').style.display = 'block'; 
+            }
+            else if (style === 'sketch') { 
+                document.getElementById('grp_threshold').style.display = 'block'; 
+                document.getElementById('grp_density').style.display = 'block'; 
+                document.getElementById('density_label').innerHTML = 'Mật độ nét: <span id="densityVal" class="val-display">' + document.getElementById('density').value + '</span>'; 
+            }
+            else if (style === 'spiral') { 
+                document.getElementById('grp_density').style.display = 'block'; 
+                document.getElementById('density_label').innerHTML = 'Vòng xoắn: <span id="densityVal" class="val-display">' + document.getElementById('density').value + '</span>'; 
+            }
+        }
+        triggerUpdate();
+    }
+
+    function triggerUpdate() {
+        if (!document.getElementById('imageInput').files[0]) return;
+        document.getElementById('loadingIndicator').style.display = "block";
+        clearTimeout(debounceTimer); 
+        debounceTimer = setTimeout(generateCode, 300); 
+    }
+
+    async function generateCode() {
+        const formData = new FormData();
+        formData.append('image', document.getElementById('imageInput').files[0]);
+        formData.append('main_mode', document.getElementById('main_mode').value);
+        formData.append('art_style', document.getElementById('art_style').value);
+        formData.append('target_width', document.getElementById('targetWidth').value);
+        formData.append('threshold', document.getElementById('threshold').value);
+        formData.append('smoothing', document.getElementById('smoothing').value);
+        formData.append('density', document.getElementById('density').value);
+        formData.append('feedrate', document.getElementById('feedrate').value);
+        formData.append('pen_size', document.getElementById('pen_size').value);
+        
+        // MỚI THÊM
+        formData.append('z_up', document.getElementById('z_up').value);
+        formData.append('z_down', document.getElementById('z_down').value);
+        formData.append('g_scale', document.getElementById('g_scale').value);
+
+        try {
+            const response = await fetch('/generate?t=' + new Date().getTime(), { method: 'POST', body: formData });
+            const result = await response.json();
+            if (result.error) { alert(result.error); return; }
+            
+            generatedGcode = result.gcode;
+            document.getElementById('svg-content').innerHTML = result.svg;
+            document.getElementById('downloadBtn').style.display = "block";
+        } catch (e) { 
+            console.error(e); 
+        } finally { 
+            document.getElementById('loadingIndicator').style.display = "none"; 
+        }
+    }
+
+    function downloadGcode() {
+        const blob = new Blob([generatedGcode], { type: 'text/plain' });
+        const a = document.createElement('a'); 
+        a.href = URL.createObjectURL(blob); 
+        a.download = "Xuat_CNC.gcode"; 
+        a.click();
+    }
+    
+    updateUI();
+</script>
+</body>
+</html>
