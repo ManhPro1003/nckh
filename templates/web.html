@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>CNC WEB NCKH 2026</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2280%22>🖋️</text></svg>">
+    
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: #fff; margin: 0; display: flex; height: 100vh; overflow: hidden;}
+        
+        #intro-screen {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-color: #0d0d0d; z-index: 9999;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            transition: opacity 0.8s ease; overflow: hidden;
+        }
+        .gear { position: absolute; color: rgba(0, 242, 254, 0.05); animation: rotate 10s linear infinite; z-index: -1; }
+        .gear-1 { top: -50px; left: -50px; font-size: 300px; }
+        .gear-2 { bottom: -80px; right: -80px; font-size: 400px; animation-direction: reverse; }
+        @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .intro-title { color: #00f2fe; font-size: 64px; letter-spacing: 6px; margin: 0; text-transform: uppercase; opacity: 0; text-shadow: 0 0 20px rgba(0, 242, 254, 0.5); animation: fadeInUp 0.8s ease forwards; }
+        .intro-subtitle { color: #777; font-size: 24px; letter-spacing: 3px; margin: 15px 0 80px 0; opacity: 0; animation: fadeInUp 0.8s ease 0.3s forwards; }
+        .intro-team { display: flex; flex-direction: row; gap: 35px; justify-content: center; width: 100%; }
+        .intro-team span { color: #e0e0e0; font-size: 19px; font-weight: 500; opacity: 0; white-space: nowrap; animation: fadeInUp 0.8s ease forwards; }
+        .intro-team span:nth-child(1) { animation-delay: 0.6s; }
+        .intro-team span:nth-child(2) { animation-delay: 0.8s; }
+        .intro-team span:nth-child(3) { animation-delay: 1.0s; }
+        .intro-team span:nth-child(4) { animation-delay: 1.2s; }
+        .intro-team span:nth-child(5) { animation-delay: 1.4s; }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(25px); } to { opacity: 1; transform: translateY(0); } }
+
+        .sidebar { width: 400px; background: #252526; padding: 20px; border-right: 1px solid #333; overflow-y: auto;}
+        .sidebar h2 { color: #00f2fe; text-align: center; border-bottom: 1px solid #444; padding-bottom: 10px; margin: 0 0 20px 0;}
+        .main-content { flex: 1; display: flex; justify-content: center; align-items: center; background: #000; position: relative;}
+        #preview-container { width: 92%; height: 92vh; border: 1px solid #333; overflow: hidden; cursor: grab; background: #111; border-radius: 8px;}
+        #pan-zoom-wrapper { transform-origin: 0 0; }
+        
+        .control-group { margin-bottom: 15px; background: #333; padding: 12px; border-radius: 5px;}
+        label { display: block; font-size: 13px; color: #aaa; margin-bottom: 5px;}
+        select, input { width: 100%; padding: 8px; background: #222; border: 1px solid #444; color: #fff; border-radius: 3px; box-sizing: border-box;}
+        input[type="range"] { accent-color: #00f2fe; cursor: pointer;}
+        .val { float: right; color: #00f2fe; font-weight: bold;}
+        .btn-dl { width: 100%; padding: 12px; background: #28a745; color: #fff; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; display: none; margin-top: 10px;}
+        
+        .btn-usb { width: 100%; padding: 10px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; margin-top: 5px; transition: 0.2s;}
+        .btn-usb:hover { opacity: 0.8; }
+        .progress-container { width: 100%; background: #222; height: 15px; border-radius: 5px; margin-top: 10px; overflow: hidden; }
+        #prog-bar { height: 100%; background: #ffaa00; width: 0%; transition: width 0.2s; }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+<div id="intro-screen">
+    <i class="fa-solid fa-gear gear gear-1"></i>
+    <i class="fa-solid fa-gear gear gear-2"></i>
+    <h1 class="intro-title">CNC PLOTTER PRO</h1>
+    <div class="intro-subtitle">NCKH 2025 – 2026</div>
+    <div class="intro-team">
+        <span>Bùi Đức Mạnh</span>
+        <span>Vũ Duy Tiến</span>
+        <span>Vũ Minh Khoa</span>
+        <span>Nguyễn Thị Kim Thúy</span>
+        <span>Nguyễn Ngọc Thắng</span>
+    </div>
+</div>
+
+<div class="sidebar">
+    <h2>CNC WEB NCKH 2026</h2>
+    <form id="uploadForm">
+        <div class="control-group">
+            <label>Chế độ hoạt động:</label>
+            <select id="main_mode" onchange="updateUI()">
+                <option value="art">Vẽ Hình ảnh / Nghệ thuật</option>
+                <option value="pcb">Vẽ Mạch PCB (Tô đặc)</option>
+            </select>
+        </div>
+        <div class="control-group" id="grp_style">
+            <label>Kiểu vẽ:</label>
+            <select id="art_style" onchange="updateUI()">
+                <option value="edge">Vẽ Biên (Sắc nét)</option>
+                <option value="sketch">Phác thảo (Gạch chéo)</option>
+                <option value="spiral">Xoắn ốc (Chân dung)</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <label>Tải ảnh đầu vào:</label>
+            <input type="file" id="imageInput" accept="image/*" onchange="triggerUpdate()">
+        </div>
+        <div class="control-group">
+            <label>Kích thước chiều ngang mặc định (mm):</label>
+            <input type="number" id="targetWidth" value="100">
+        </div>
+        <div class="control-group" style="border-left: 4px solid #ff007f;">
+            <label>Tỷ lệ phóng đại G-Code (%): <span id="gsVal" class="val">100</span></label>
+            <input type="range" id="g_scale" min="10" max="1000" value="100" oninput="updateVal('gsVal', this.value)" onchange="triggerUpdate()">
+        </div>
+        <div class="control-group" style="border-left: 4px solid #00f2fe;">
+            <label>Z Nhấc bút (mm):</label>
+            <input type="number" id="z_up" value="5.0" step="0.5">
+            <label style="margin-top:5px">Z Hạ bút (vẽ) (mm):</label>
+            <input type="number" id="z_down" value="0.0" step="0.5">
+        </div>
+        <div class="control-group">
+            <label>Kích cỡ ngòi bút (mm): <span id="penVal" class="val">0.3</span></label>
+            <input type="range" id="pen_size" min="0.1" max="2.0" step="0.1" value="0.3" oninput="updateVal('penVal', this.value)" onchange="triggerUpdate()">
+        </div>
+        <div class="control-group">
+            <label>Độ sắc nét (Threshold): <span id="thVal" class="val">127</span></label>
+            <input type="range" id="threshold" min="0" max="255" value="127" oninput="updateVal('thVal', this.value)" onchange="triggerUpdate()">
+        </div>
+        <div class="control-group" id="grp_smooth">
+            <label>Làm mượt nét: <span id="smVal" class="val">1.0</span></label>
+            <input type="range" id="smoothing" min="0.1" max="5.0" step="0.1" value="1.0" oninput="updateVal('smVal', this.value)" onchange="triggerUpdate()">
+        </div>
+
+        <div class="control-group" style="border-left: 4px solid #ffaa00; background: #2a2a2a;">
+            <label style="color: #ffaa00; font-size: 15px;">🔌 TRẠM ĐIỀU KHIỂN CNC (Web Serial)</label>
+            
+            <div style="display: flex; gap: 5px; margin-top: 10px;">
+                <button type="button" class="btn-usb" id="btnConnect" style="background:#17a2b8; flex:1;" onclick="connectUSB()">KẾT NỐI MÁY</button>
+                <button type="button" class="btn-usb" id="btnDisconnect" style="background:#dc3545; flex:1; display:none;" onclick="disconnectUSB()">NGẮT KẾT NỐI</button>
+            </div>
+
+            <div style="margin-top: 15px;">
+                <p style="font-size: 12px; color: #ccc; margin: 0 0 5px 0;">Trạng thái: <span id="mac_status" style="color: #00f2fe; font-weight: bold;">Chưa kết nối</span></p>
+                <p style="font-size: 12px; color: #ccc; margin: 0;">Tiến độ: <span id="mac_line">0/0</span> (<span id="mac_pct">0</span>%)</p>
+                
+                <div class="progress-container"><div id="prog-bar"></div></div>
+
+                <div style="display: flex; gap: 5px; margin-top: 10px;">
+                    <button type="button" class="btn-usb" style="background:#28a745; flex:2; font-size: 16px;" onclick="startCNC()">▶ BẮT ĐẦU VẼ</button>
+                    <button type="button" class="btn-usb" style="background:#dc3545; flex:1; font-size: 16px;" onclick="stopCNC()">🛑 DỪNG</button>
+                </div>
+            </div>
+        </div>
+
+        <button type="button" class="btn-dl" id="dlBtn" onclick="downloadGcode()">📥 TẢI FILE G-CODE VỀ MÁY</button>
+    </form>
+</div>
+
+<div class="main-content">
+    <div id="preview-container">
+        <div id="pan-zoom-wrapper"><div id="svg-content" style="color:#444; text-align:center; padding-top: 40vh; font-size: 18px;">Tải ảnh lên để bắt đầu xử lý</div></div>
+    </div>
+</div>
+
+<script>
+    window.addEventListener('DOMContentLoaded', () => {
+        setTimeout(() => {
+            const intro = document.getElementById('intro-screen');
+            intro.style.opacity = '0';
+            setTimeout(() => { intro.style.display = 'none'; }, 800);
+        }, 3000);
+    });
+
+    let generatedGcode = "", debounce;
+    function updateVal(id, v) { document.getElementById(id).innerText = v; }
+    
+    function updateUI() {
+        const isPcb = document.getElementById('main_mode').value === 'pcb';
+        document.getElementById('grp_style').style.display = isPcb ? 'none' : 'block';
+        document.getElementById('grp_smooth').style.display = isPcb ? 'none' : 'block';
+        triggerUpdate();
+    }
+
+    function triggerUpdate() {
+        if (!document.getElementById('imageInput').files[0]) return;
+        clearTimeout(debounce);
+        debounce = setTimeout(generate, 400);
+    }
+
+    async function generate() {
+        const f = new FormData();
+        f.append('image', document.getElementById('imageInput').files[0]);
+        f.append('main_mode', document.getElementById('main_mode').value);
+        f.append('art_style', document.getElementById('art_style').value);
+        f.append('target_width', document.getElementById('targetWidth').value);
+        f.append('threshold', document.getElementById('threshold').value);
+        f.append('smoothing', document.getElementById('smoothing').value);
+        f.append('density', 30);
+        f.append('pen_size', document.getElementById('pen_size').value);
+        f.append('feedrate', 1500);
+        f.append('z_up', document.getElementById('z_up').value);
+        f.append('z_down', document.getElementById('z_down').value);
+        f.append('g_scale', document.getElementById('g_scale').value);
+
+        const r = await fetch('/generate', { method: 'POST', body: f });
+        const res = await r.json();
+        generatedGcode = res.gcode;
+        document.getElementById('svg-content').innerHTML = res.svg;
+        document.getElementById('dlBtn').style.display = 'block';
+    }
+
+    function downloadGcode() {
+        const blob = new Blob([generatedGcode], { type: 'text/plain' });
+        const a = document.createElement('a'); 
+        a.href = URL.createObjectURL(blob); 
+        a.download = "CNC_NCKH_2026.gcode"; 
+        a.click();
+    }
+
+    // ====================================================
+    // GIAO TIẾP USB TRỰC TIẾP TỪ TRÌNH DUYỆT (WEB SERIAL API)
+    // ====================================================
+    let port;
+    let writer;
+    let reader;
+    let keepReading = false;
+    let isRunning = false;
+    let serialBuffer = "";
+    let okReceived = false;
+
+    async function connectUSB() {
+        if (!("serial" in navigator)) {
+            alert("Trình duyệt của bạn không hỗ trợ Web Serial. Hãy dùng Google Chrome hoặc Edge trên máy tính!");
+            return;
+        }
+        try {
+            // Hiển thị popup chọn cổng COM của Chrome
+            port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 115200 });
+
+            document.getElementById('btnConnect').style.display = 'none';
+            document.getElementById('btnDisconnect').style.display = 'block';
+            document.getElementById('mac_status').innerText = "Đã kết nối máy CNC";
+
+            // Khởi tạo luồng ghi
+            writer = port.writable.getWriter();
+
+            // Khởi tạo luồng đọc liên tục để nghe chữ "ok" từ STM32
+            keepReading = true;
+            readLoop();
+
+        } catch (e) {
+            console.error(e);
+            alert("Không thể kết nối. Có thể bạn chưa chọn cổng hoặc máy đang bị chiếm bởi phần mềm khác.");
+        }
+    }
+
+    async function readLoop() {
+        while (port.readable && keepReading) {
+            const textDecoder = new TextDecoderStream();
+            const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+            reader = textDecoder.readable.getReader();
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    if (value) {
+                        serialBuffer += value;
+                        // Máy bạn trả về "ok"
+                        if (serialBuffer.includes("ok")) {
+                            okReceived = true;
+                            serialBuffer = ""; // Xóa buffer sau khi nhận
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error(error);
+            } finally {
+                reader.releaseLock();
+            }
+        }
+    }
+
+    async function disconnectUSB() {
+        isRunning = false;
+        keepReading = false;
+        try {
+            if (reader) await reader.cancel();
+            if (writer) await writer.close();
+            if (port) await port.close();
+        } catch (e) {}
+
+        document.getElementById('btnConnect').style.display = 'block';
+        document.getElementById('btnDisconnect').style.display = 'none';
+        document.getElementById('mac_status').innerText = "Đã ngắt kết nối";
+    }
+
+    async function stopCNC() {
+        isRunning = false;
+        document.getElementById('mac_status').innerText = "Đã dừng khẩn cấp";
+    }
+
+    // Logic dịch G-code ra Binary và gửi đi (Giống hệt file mophong.py)
+    async function startCNC() {
+        if (!port) { alert("Vui lòng Bấm KẾT NỐI MÁY trước!"); return; }
+        if (!generatedGcode) { alert("Chưa có bản vẽ. Hãy tải ảnh lên trước!"); return; }
+        if (isRunning) return;
+
+        isRunning = true;
+        document.getElementById('mac_status').innerText = "Đang chạy CNC...";
+
+        const lines = generatedGcode.split('\n');
+        let totalLines = lines.length;
+        let last_x = 0, last_y = 0, last_dx = 0;
+        let pen_state = 0; // 0 = UP, 1 = DOWN
+        const STEPS_PER_MM = 16;
+
+        for (let i = 0; i < lines.length; i++) {
+            if (!isRunning) break;
+
+            // Cập nhật thanh tiến trình giao diện
+            document.getElementById('mac_line').innerText = `${i+1}/${totalLines}`;
+            const pct = Math.round(((i+1)/totalLines)*100);
+            document.getElementById('mac_pct').innerText = pct;
+            document.getElementById('prog-bar').style.width = pct + "%";
+
+            let line = lines[i].trim();
+            if (!line || line.startsWith(";")) continue;
+
+            if (line.includes("G0")) pen_state = 0;
+            else if (line.includes("G1")) pen_state = 1;
+
+            let matchX = line.match(/X(-?\d*\.?\d+)/);
+            let matchY = line.match(/Y(-?\d*\.?\d+)/);
+
+            let x = matchX ? Math.round(parseFloat(matchX[1]) * STEPS_PER_MM) : last_x;
+            let y = matchY ? Math.round(parseFloat(matchY[1]) * STEPS_PER_MM) : last_y;
+
+            // Thuật toán chống đảo chiều X
+            let dx = x - last_x;
+            if (y === last_y && (dx * last_dx) < 0) continue;
+            if (dx !== 0) last_dx = dx;
+
+            // GÓI DỮ LIỆU NHỊ PHÂN CHO STM32 (3 số nguyên Int16)
+            let buffer = new ArrayBuffer(6);
+            let view = new DataView(buffer);
+            view.setInt16(0, x, true); // true = little-endian (như '<hhh' của Python)
+            view.setInt16(2, y, true);
+            view.setInt16(4, pen_state, true);
+
+            okReceived = false;
+            await writer.write(buffer);
+
+            // Đợi STM32 làm xong và báo "ok"
+            while (!okReceived && isRunning) {
+                await new Promise(r => setTimeout(r, 5));
+            }
+
+            last_x = x;
+            last_y = y;
+        }
+
+        // Về home khi kết thúc
+        if (isRunning) {
+            let buffer = new ArrayBuffer(6);
+            let view = new DataView(buffer);
+            view.setInt16(0, 0, true);
+            view.setInt16(2, 0, true);
+            view.setInt16(4, 0, true);
+            await writer.write(buffer);
+            document.getElementById('mac_status').innerText = "Hoàn thành xuất sắc!";
+        }
+        isRunning = false;
+    }
+
+    // --- LOGIC PAN & ZOOM ---
+    const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
+    let scale = 1, pointX = 0, pointY = 0, panning = false, startX = 0, startY = 0;
+    function setTransform() { wrapper.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`; }
+    container.addEventListener('mousedown', (e) => { e.preventDefault(); startX = e.clientX - pointX; startY = e.clientY - pointY; panning = true; });
+    container.addEventListener('mouseup', () => panning = false);
+    container.addEventListener('mousemove', (e) => { if (!panning) return; pointX = e.clientX - startX; pointY = e.clientY - startY; setTransform(); });
+    container.addEventListener('wheel', (e) => {
+        e.preventDefault(); const rect = container.getBoundingClientRect();
+        const xs = (e.clientX - rect.left - pointX) / scale, ys = (e.clientY - rect.top - pointY) / scale;
+        if (e.deltaY < 0) scale *= 1.15; else scale /= 1.15;
+        pointX = e.clientX - rect.left - xs * scale; pointY = e.clientY - rect.top - ys * scale; setTransform();
+    });
+
+    updateUI();
+</script>
+</body>
+</html>
