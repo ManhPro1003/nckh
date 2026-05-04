@@ -275,124 +275,84 @@
      * Hàm gửi dữ liệu nhị phân (Binary) qua Serial
      * Đảm bảo định dạng 6 bytes (int16_t x 3) Little-endian
      */
-    async function sendBinaryData(x, y, pen) {
-        if (!writer) return;
+async function startCNC() {
+    if (!port || !generatedGcode || isRunning) return;
 
-        const buffer = new ArrayBuffer(6);
-        const view = new DataView(buffer);
+    isRunning = true;
+    const lines = generatedGcode.split('\n');
+    
+    // Khởi tạo tọa độ gốc là 0 để tránh lỗi NaN
+    let last_x = 0;
+    let last_y = 0;
+    let pen_state = 0; // 0: Lên, 1: Xuống
+    const STEPS_PER_MM = 16;
+
+    // Gửi lệnh đồng bộ đầu tiên (0,0,0)
+    await send_data(0, 0, 0);
+
+    for (let i = 0; i < lines.length; i++) {
+        if (!isRunning) break;
+
+        let line = lines[i].trim();
+        if (!line || line.startsWith(";")) continue;
+
+        // 1. Cập nhật trạng thái bút từ G-code
+        if (line.includes("G0")) pen_state = 0;
+        else if (line.includes("G1")) pen_state = 1;
         
-        view.setInt16(0, x, true); 
-        view.setInt16(2, y, true);
-        view.setInt16(4, pen, true);
-
-        okReceived = false;
-        await writer.write(new Uint8Array(buffer));
-
-        // Cơ chế phản hồi: Chờ "ok" từ vi điều khiển trước khi gửi lệnh tiếp theo
-        let timeoutCounter = 0;
-        while (!okReceived && isRunning) {
-            await new Promise(r => setTimeout(r, 2));
-            timeoutCounter += 2;
-            // Bảo vệ: Nếu sau 10 giây máy không phản hồi, tự thoát để tránh treo trình duyệt
-            if (timeoutCounter > 10000) {
-                console.log("Timeout chờ phản hồi ok");
-                break; 
+        // Nếu dòng có lệnh Z, ưu tiên cập nhật pen_state theo Z
+        if (line.includes("Z")) {
+            let matchZ = line.match(/Z(-?\d*\.?\d+)/);
+            if (matchZ) {
+                pen_state = parseFloat(matchZ[1]) <= 0 ? 1 : 0;
             }
         }
+
+        // 2. Lấy tọa độ X, Y. Nếu dòng không có, dùng lại giá trị cũ[cite: 1]
+        let mx = line.match(/X(-?\d*\.?\d+)/);
+        let my = line.match(/Y(-?\d*\.?\d+)/);
+
+        let x = mx ? Math.round(parseFloat(mx[1]) * STEPS_PER_MM) : last_x;
+        let y = my ? Math.round(parseFloat(my[1]) * STEPS_PER_MM) : last_y;
+
+        // 3. Gửi dữ liệu xuống STM32 (Bất kể có thay đổi hay không)[cite: 1]
+        // Việc gửi lại tọa độ cũ kèm pen_state mới giúp hạ bút tại chỗ chính xác.
+        await send_data(x, y, pen_state);
+
+        // 4. Cập nhật lại bộ nhớ tọa độ cho lần lặp sau[cite: 1]
+        last_x = x;
+        last_y = y;
+
+        // Cập nhật UI đơn giản
+        document.getElementById('mac_line').innerText = `${i+1}/${lines.length}`;
     }
 
-    // ====================================================
-    // THUẬT TOÁN ĐIỀU KHIỂN CHÍNH THỨC
-    // ====================================================
-    async function startCNC() {
-        if (!port) { alert("Vui lòng Bấm KẾT NỐI MÁY trước!"); return; }
-        if (!generatedGcode) { alert("Chưa có bản vẽ. Hãy tải ảnh lên trước!"); return; }
-        if (isRunning) return;
+    isRunning = false;
+    document.getElementById('mac_status').innerText = "Hoàn thành!";
+}
 
-        isRunning = true;
-        
-        // Cache UI elements
-        const elStatus = document.getElementById('mac_status');
-        const elLine = document.getElementById('mac_line');
-        const elPct = document.getElementById('mac_pct');
-        const elBar = document.getElementById('prog-bar');
-        
-        elStatus.innerText = "Đang chạy CNC...";
+/**
+ * Hàm gửi dữ liệu nhị phân (6 bytes)
+ */
+async function send_data(x, y, z) {
+    if (!writer) return;
 
-        const lines = generatedGcode.split('\n');
-        const totalLines = lines.length;
-        
-        // KHỞI TẠO: Phải khớp với tọa độ thực tế lúc bắt đầu
-        let last_x = 0; 
-        let last_y = 0;
-        let last_dx = 0;
-        let pen_state = 0; 
-        let lastPct = -1;
-        const STEPS_PER_MM = 16;
+    let buffer = new ArrayBuffer(6);
+    let view = new DataView(buffer);
+    
+    // Đóng gói 3 số Int16, Little-endian (<hhh)[cite: 1]
+    view.setInt16(0, x, true); 
+    view.setInt16(2, y, true);
+    view.setInt16(4, z, true);
 
-        // Chỉ gửi (0,0,0) một lần duy nhất để đồng bộ Home lúc bắt đầu
-        await sendBinaryData(0, 0, 0);
+    okReceived = false;
+    await writer.write(buffer);
 
-        for (let i = 0; i < lines.length; i++) {
-            if (!isRunning) break;
-
-            let line = lines[i].trim();
-            if (!line || line.startsWith(";")) continue;
-
-            // 1. Cập nhật trạng thái bút (Z) hoặc lệnh G
-            if (line.includes("G0")) pen_state = 0;
-            else if (line.includes("G1")) pen_state = 1;
-            
-            if (line.includes("Z")) {
-                let matchZ = line.match(/Z(-?\d*\.?\d+)/);
-                if (matchZ) pen_state = parseFloat(matchZ[1]) <= 0 ? 1 : 0;
-            }
-
-            // 2. Lấy tọa độ X, Y
-            let mx = line.match(/X(-?\d*\.?\d+)/);
-            let my = line.match(/Y(-?\d*\.?\d+)/);
-
-            // QUAN TRỌNG: Nếu không có X/Y trên dòng này, x và y PHẢI giữ nguyên giá trị cũ
-            let x = mx ? Math.round(parseFloat(mx[1]) * STEPS_PER_MM) : last_x;
-            let y = my ? Math.round(parseFloat(my[1]) * STEPS_PER_MM) : last_y;
-
-            // 3. Logic chống đảo chiều X
-            let dx = x - last_x;
-            if (y === last_y && dx !== 0 && last_dx !== 0 && (dx * last_dx) < 0) {
-                // Nếu skip ở đây, ta KHÔNG cập nhật last_x, để dòng sau tính lại dx từ điểm cũ
-                continue; 
-            }
-
-            if (dx !== 0) last_dx = dx;
-
-            // 4. KIỂM TRA CUỐI CÙNG TRƯỚC KHI GỬI
-            // Nếu tọa độ gửi đi giống hệt tọa độ vừa gửi, và pen_state cũng không đổi, thì bỏ qua
-            if (x === last_x && y === last_y && i > 0) {
-                // Sẽ chỉ bỏ qua nếu đây là dòng bị duplicate tọa độ không đáng có
-            }
-
-            await sendBinaryData(x, y, pen_state);
-
-            // Cập nhật UI
-            const pct = Math.round(((i + 1) / totalLines) * 100);
-            if (pct !== lastPct) {
-                elLine.innerText = `${i + 1}/${totalLines}`;
-                elPct.innerText = pct;
-                elBar.style.width = pct + "%";
-                lastPct = pct;
-            }
-
-            // Chỉ cập nhật sau khi đã gửi thành công
-            last_x = x;
-            last_y = y;
-        }
-
-        if (isRunning) {
-            await sendBinaryData(0, 0, 0); // Đưa máy về Home
-            elStatus.innerText = "Hoàn thành xuất sắc!";
-        }
-        isRunning = false;
+    // Đợi STM32 phản hồi "ok" mới gửi lệnh tiếp theo[cite: 1]
+    while (!okReceived && isRunning) {
+        await new Promise(r => setTimeout(r, 1)); 
     }
+}
 
     const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
     let scale = 1, pointX = 0, pointY = 0, panning = false, startX = 0, startY = 0;
