@@ -281,14 +281,13 @@ async function startCNC() {
     isRunning = true;
     const lines = generatedGcode.split('\n');
     
-    // Khởi tạo tọa độ gốc là 0 để tránh lỗi NaN
+    // Khởi tạo biến tọa độ
     let last_x = 0;
     let last_y = 0;
-    let pen_state = 0; // 0: Lên, 1: Xuống
+    let pen_state = 0; 
     const STEPS_PER_MM = 16;
 
-    // Gửi lệnh đồng bộ đầu tiên (0,0,0)
-    await send_data(0, 0, 0);
+    // ĐÃ XÓA dòng await send_data(0, 0, 0); ở đây!
 
     for (let i = 0; i < lines.length; i++) {
         if (!isRunning) break;
@@ -296,11 +295,10 @@ async function startCNC() {
         let line = lines[i].trim();
         if (!line || line.startsWith(";")) continue;
 
-        // 1. Cập nhật trạng thái bút từ G-code
+        // 1. Cập nhật trạng thái bút
         if (line.includes("G0")) pen_state = 0;
         else if (line.includes("G1")) pen_state = 1;
         
-        // Nếu dòng có lệnh Z, ưu tiên cập nhật pen_state theo Z
         if (line.includes("Z")) {
             let matchZ = line.match(/Z(-?\d*\.?\d+)/);
             if (matchZ) {
@@ -308,23 +306,30 @@ async function startCNC() {
             }
         }
 
-        // 2. Lấy tọa độ X, Y. Nếu dòng không có, dùng lại giá trị cũ[cite: 1]
+        // 2. Lấy tọa độ X, Y
         let mx = line.match(/X(-?\d*\.?\d+)/);
         let my = line.match(/Y(-?\d*\.?\d+)/);
 
         let x = mx ? Math.round(parseFloat(mx[1]) * STEPS_PER_MM) : last_x;
         let y = my ? Math.round(parseFloat(my[1]) * STEPS_PER_MM) : last_y;
 
-        // 3. Gửi dữ liệu xuống STM32 (Bất kể có thay đổi hay không)[cite: 1]
-        // Việc gửi lại tọa độ cũ kèm pen_state mới giúp hạ bút tại chỗ chính xác.
+        // NẾU TỌA ĐỘ BỊ LỖI (NaN) -> BỎ QUA DÒNG NÀY NGAY LẬP TỨC!
+        if (isNaN(x) || isNaN(y)) {
+            console.error("Lỗi dữ liệu G-code tại dòng:", line, "Bỏ qua để bảo vệ máy!");
+            continue; 
+        }
+
+        // 3. Gửi dữ liệu
         await send_data(x, y, pen_state);
 
-        // 4. Cập nhật lại bộ nhớ tọa độ cho lần lặp sau[cite: 1]
+        // 4. Lưu lại tọa độ
         last_x = x;
         last_y = y;
 
-        // Cập nhật UI đơn giản
+        // Cập nhật UI
         document.getElementById('mac_line').innerText = `${i+1}/${lines.length}`;
+        document.getElementById('mac_pct').innerText = Math.round(((i+1)/lines.length)*100);
+        document.getElementById('prog-bar').style.width = `${((i+1)/lines.length)*100}%`;
     }
 
     isRunning = false;
@@ -337,10 +342,14 @@ async function startCNC() {
 async function send_data(x, y, z) {
     if (!writer) return;
 
+    // KHIÊN BẢO VỆ CHỐNG GỬI SỐ 0 NGOÀI Ý MUỐN
+    if (isNaN(x) || x === null) x = 0;
+    if (isNaN(y) || y === null) y = 0;
+    if (isNaN(z) || z === null) z = 0;
+
     let buffer = new ArrayBuffer(6);
     let view = new DataView(buffer);
     
-    // Đóng gói 3 số Int16, Little-endian (<hhh)[cite: 1]
     view.setInt16(0, x, true); 
     view.setInt16(2, y, true);
     view.setInt16(4, z, true);
@@ -348,9 +357,16 @@ async function send_data(x, y, z) {
     okReceived = false;
     await writer.write(buffer);
 
-    // Đợi STM32 phản hồi "ok" mới gửi lệnh tiếp theo[cite: 1]
+    // Đợi phản hồi
+    let timeout = 0;
     while (!okReceived && isRunning) {
         await new Promise(r => setTimeout(r, 1)); 
+        timeout++;
+        // Thêm timeout bảo vệ: Nếu sau 2 giây STM32 không rep "ok", bỏ qua lệnh này để không treo web
+        if (timeout > 2000) {
+            console.warn("Mất kết nối STM32 (Timeout) tại tọa độ:", x, y);
+            break; 
+        }
     }
 }
 
