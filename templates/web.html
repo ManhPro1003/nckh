@@ -280,14 +280,12 @@ async function startCNC() {
 
     isRunning = true;
     const lines = generatedGcode.split('\n');
-    
-    // Khởi tạo biến tọa độ
+
     let last_x = 0;
     let last_y = 0;
-    let pen_state = 0; 
+    let last_dx = 0;
+    let pen_state = 0;
     const STEPS_PER_MM = 16;
-
-    // ĐÃ XÓA dòng await send_data(0, 0, 0); ở đây!
 
     for (let i = 0; i < lines.length; i++) {
         if (!isRunning) break;
@@ -295,77 +293,88 @@ async function startCNC() {
         let line = lines[i].trim();
         if (!line || line.startsWith(";")) continue;
 
-        // 1. Cập nhật trạng thái bút
-        if (line.includes("G0")) pen_state = 0;
-        else if (line.includes("G1")) pen_state = 1;
-        
-        if (line.includes("Z")) {
-            let matchZ = line.match(/Z(-?\d*\.?\d+)/);
-            if (matchZ) {
-                pen_state = parseFloat(matchZ[1]) <= 0 ? 1 : 0;
-            }
+        // ===== GIỐNG PYTHON =====
+        if (line.includes("G0")) {
+            pen_state = 0;
+        } else if (line.includes("G1")) {
+            pen_state = 1;
         }
 
-        // 2. Lấy tọa độ X, Y
         let mx = line.match(/X(-?\d*\.?\d+)/);
         let my = line.match(/Y(-?\d*\.?\d+)/);
 
-        let x = mx ? Math.round(parseFloat(mx[1]) * STEPS_PER_MM) : last_x;
-        let y = my ? Math.round(parseFloat(my[1]) * STEPS_PER_MM) : last_y;
+        let x = last_x;
+        let y = last_y;
 
-        // NẾU TỌA ĐỘ BỊ LỖI (NaN) -> BỎ QUA DÒNG NÀY NGAY LẬP TỨC!
-        if (isNaN(x) || isNaN(y)) {
-            console.error("Lỗi dữ liệu G-code tại dòng:", line, "Bỏ qua để bảo vệ máy!");
-            continue; 
+        if (mx) {
+            x = Math.round(parseFloat(mx[1]) * STEPS_PER_MM);
         }
 
-        // 3. Gửi dữ liệu
+        if (my) {
+            y = Math.round(parseFloat(my[1]) * STEPS_PER_MM);
+        }
+
+        // ❌ KHÔNG ÉP VỀ 0 — GIỐNG PYTHON
+        if (isNaN(x) || isNaN(y)) {
+            console.warn("Skip dòng lỗi:", line);
+            continue;
+        }
+
+        // ===== CHỐNG ĐẢO CHIỀU (GIỐNG PYTHON) =====
+        let dx = x - last_x;
+
+        if (y === last_y && dx * last_dx < 0) {
+            continue;
+        }
+
+        if (dx !== 0) {
+            last_dx = dx;
+        }
+
+        console.log("SEND:", x, y, pen_state);
+
         await send_data(x, y, pen_state);
 
-        // 4. Lưu lại tọa độ
         last_x = x;
         last_y = y;
 
-        // Cập nhật UI
-        document.getElementById('mac_line').innerText = `${i+1}/${lines.length}`;
-        document.getElementById('mac_pct').innerText = Math.round(((i+1)/lines.length)*100);
-        document.getElementById('prog-bar').style.width = `${((i+1)/lines.length)*100}%`;
+        // UI
+        document.getElementById('mac_line').innerText = `${i + 1}/${lines.length}`;
+        document.getElementById('mac_pct').innerText = Math.round(((i + 1) / lines.length) * 100);
+        document.getElementById('prog-bar').style.width = `${((i + 1) / lines.length) * 100}%`;
     }
 
     isRunning = false;
     document.getElementById('mac_status').innerText = "Hoàn thành!";
 }
-
-/**
- * Hàm gửi dữ liệu nhị phân (6 bytes)
- */
-async function send_data(x, y, z) {
+    async function send_data(x, y, z) {
     if (!writer) return;
 
-    // KHIÊN BẢO VỆ CHỐNG GỬI SỐ 0 NGOÀI Ý MUỐN
-    if (isNaN(x) || x === null) x = 0;
-    if (isNaN(y) || y === null) y = 0;
-    if (isNaN(z) || z === null) z = 0;
+    // ❌ KHÔNG ÉP 0
+    if (isNaN(x) || isNaN(y) || isNaN(z)) {
+        console.warn("Dữ liệu lỗi, bỏ qua:", x, y, z);
+        return;
+    }
 
     let buffer = new ArrayBuffer(6);
     let view = new DataView(buffer);
-    
-    view.setInt16(0, x, true); 
+
+    view.setInt16(0, x, true);
     view.setInt16(2, y, true);
     view.setInt16(4, z, true);
 
     okReceived = false;
     await writer.write(buffer);
 
-    // Đợi phản hồi
     let timeout = 0;
+
     while (!okReceived && isRunning) {
-        await new Promise(r => setTimeout(r, 1)); 
+        await new Promise(r => setTimeout(r, 1));
         timeout++;
-        // Thêm timeout bảo vệ: Nếu sau 2 giây STM32 không rep "ok", bỏ qua lệnh này để không treo web
+
         if (timeout > 2000) {
-            console.warn("Mất kết nối STM32 (Timeout) tại tọa độ:", x, y);
-            break; 
+            console.warn("Timeout STM32 tại:", x, y);
+            break;
         }
     }
 }
