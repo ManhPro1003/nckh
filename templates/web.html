@@ -231,28 +231,30 @@
     }
 
     // Vòng lặp đọc dữ liệu độc lập để luôn bắt được chữ "ok"
-    async function readLoop() {
+    let okReceived = false;
+
+async function readLoop() {
+    while (port && port.readable) {
+        const reader = port.readable.getReader();
+        const decoder = new TextDecoder();
         try {
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
-                if (value) {
-                    readBuffer += value;
-                    let lines = readBuffer.split('\n');
-                    readBuffer = lines.pop(); // Giữ lại phần chưa hoàn chỉnh
-                    
-                    for (let line of lines) {
-                        if (line.trim() === "ok" || line.includes("ok")) {
-                            okReceived = true;
-                        }
-                    }
+                
+                const text = decoder.decode(value);
+                // STM32 gửi "ok\n", ta chỉ cần check xem có "ok" không
+                if (text.includes("ok")) {
+                    okReceived = true; 
                 }
             }
-        } catch (error) {
-            console.error("Lỗi đọc Serial:", error);
+        } catch (err) {
+            console.error("Lỗi đọc dữ liệu:", err);
+        } finally {
+            reader.releaseLock();
         }
     }
-
+}
     async function disconnectUSB() {
         isRunning = false;
         try {
@@ -275,97 +277,155 @@
      * Hàm gửi dữ liệu nhị phân (Binary) qua Serial
      * Đảm bảo định dạng 6 bytes (int16_t x 3) Little-endian
      */
-async function startCNC() {
-    if (!port || !generatedGcode || isRunning) return;
+async function send_data(x, y, z) {
+    if (!port || !port.writable) return;
+
+    const writer = port.writable.getWriter();
+    
+    // Đóng gói 6 byte giống Python: struct.pack('<hhh', x, y, z)
+    const data = new Int16Array([x, y, z]);
+    const payload = new Uint8Array(data.buffer);
+
+    // Reset cờ trước khi gửi
+    okReceived = false;
+
+    // Gửi dữ liệu xuống STM32
+    await writer.write(payload);
+    writer.releaseLock(); 
+
+    console.log(`Đã gửi: X${x} Y${y} Z${z}. Đang đợi STM32 phản hồi...`);
+
+    // --- LOGIC ĐỢI ĐẾN KHI OK ---
+    let timeoutCounter = 0;
+    while (!okReceived && isRunning) {
+        // Nghỉ 1ms để không làm treo trình duyệt hoàn toàn
+        await new Promise(r => setTimeout(r, 1)); 
+        
+        timeoutCounter++;
+        // Nếu quá 5 giây (5000ms) không thấy STM32 báo OK, 
+        // có thể chip bị treo hoặc lỗi ngắt, ta thoát ra để tránh treo Web
+        if (timeoutCounter > 5000) {
+            console.warn("Quá thời gian chờ (Timeout)! Tự động gửi gói tiếp theo.");
+            break;
+        }
+    }
+    
+    if (okReceived) {
+        console.log("Đã nhận OK từ STM32. Tiếp tục...");
+    }
+}
+    async function startCNC() {
+    // 1. Kiểm tra điều kiện trước khi chạy
+    if (!port || !generatedGcode || isRunning) {
+        alert("Chưa kết nối máy hoặc chưa có G-Code!");
+        return;
+    }
 
     isRunning = true;
     const lines = generatedGcode.split('\n');
+    const statusEl = document.getElementById('mac_status');
+    const progBar = document.getElementById('prog-bar');
 
-    let last_x = 0;
-    let last_y = 0;
-    let last_dx = 0;
-    let pen_state = 0;
-    const STEPS_PER_MM = 16;
+    statusEl.innerText = "Đang đồng bộ hóa với STM32...";
+    
+    try {
+        // 2. Bước đồng bộ (Sync): Gửi 6 byte 0 để "reset" bộ nhận của STM32
+        // Đề phòng trường hợp buffer của chip đang bị lệch index
+        const syncData = new Uint8Array([0, 0, 0, 0, 0, 0]);
+        const syncWriter = port.writable.getWriter();
+        await syncWriter.write(syncData);
+        syncWriter.releaseLock();
+        
+        // Chờ 500ms cho chip ổn định sau khi nhận gói sync
+        await new Promise(r => setTimeout(r, 500));
 
-    for (let i = 0; i < lines.length; i++) {
-        if (!isRunning) break;
+        let lastX = 0;
+        let lastY = 0;
+        const STEPS_PER_MM = 16; // Tỉ lệ khớp với máy của bạn
 
-        let line = lines[i].trim();
-        if (!line || line.startsWith(";")) continue;
+        // 3. Vòng lặp gửi từng lệnh G-Code
+        for (let i = 0; i < lines.length; i++) {
+            if (!isRunning) break; // Dừng nếu người dùng nhấn Stop
 
-        // Chỉ nhận đúng G0 / G1
-        const isG0 = /^\s*G0\b/.test(line);
-        const isG1 = /^\s*G1\b/.test(line);
+            let line = lines[i].trim();
+            if (!line || line.startsWith(";")) continue;
 
-        if (isG0) pen_state = 0;
-        else if (isG1) pen_state = 1;
+            // Phân tích G0/G1 và tọa độ X, Y
+            let targetX = lastX;
+            let targetY = lastY;
+            let penState = 0; // 0: Nhấc bút (G0), 1: Hạ bút (G1)
+            let isMove = false;
 
-        // Lấy X/Y
-        let mx = line.match(/X(-?\d*\.?\d+)/);
-        let my = line.match(/Y(-?\d*\.?\d+)/);
+            if (line.includes('G0') || line.includes('G1')) {
+                let matchX = line.match(/X([\d\.-]+)/);
+                let matchY = line.match(/Y([\d\.-]+)/);
+                
+                if (matchX) targetX = parseFloat(matchX[1]);
+                if (matchY) targetY = parseFloat(matchY[1]);
+                
+                // Khớp với code C: hu=0x01 là hạ bút (G1)
+                penState = line.includes('G1') ? 1 : 0;
+                isMove = true;
+            }
 
-        // Lấy Z nếu có
-        let mz = line.match(/Z(-?\d*\.?\d+)/);
+            if (isMove) {
+                // Cập nhật UI
+                statusEl.innerText = `Đang vẽ dòng ${i + 1}/${lines.length}`;
+                let percent = Math.round(((i + 1) / lines.length) * 100);
+                progBar.style.width = percent + "%";
 
-        // Dòng setup như G21, G90, M... thì bỏ qua
-        if (!mx && !my && !mz && !isG0 && !isG1) {
-            continue;
+                // CHÍNH LÀ ĐÂY: Gửi dữ liệu và ĐỢI PHẢN HỒI OK
+                // Hàm send_data này sẽ treo vòng lặp for lại cho đến khi nhận được 'ok'
+                await send_data(
+                    Math.round(targetX * STEPS_PER_MM),
+                    Math.round(targetY * STEPS_PER_MM),
+                    penState
+                );
+
+                lastX = targetX;
+                lastY = targetY;
+            }
         }
 
-        let x = last_x;
-        let y = last_y;
-
-        if (mx) x = Math.round(parseFloat(mx[1]) * STEPS_PER_MM);
-        if (my) y = Math.round(parseFloat(my[1]) * STEPS_PER_MM);
-
-        // Nếu có Z thì cập nhật pen_state giống Python logic của bạn
-        if (mz) {
-            pen_state = parseFloat(mz[1]) <= 0 ? 1 : 0;
-        }
-
-        if (isNaN(x) || isNaN(y) || isNaN(pen_state)) {
-            console.warn("Skip line lỗi:", line);
-            continue;
-        }
-
-        console.log("SEND:", x, y, pen_state, "|", line);
-        await send_data(x, y, pen_state);
-
-        // chống đảo chiều X
-        let dx = x - last_x;
-        if (y === last_y && dx * last_dx < 0) {
-            continue;
-        }
-        if (dx !== 0) {
-            last_dx = dx;
-        }
-
-        last_x = x;
-        last_y = y;
-
-        document.getElementById('mac_line').innerText = `${i + 1}/${lines.length}`;
-        document.getElementById('mac_pct').innerText = Math.round(((i + 1) / lines.length) * 100);
-        document.getElementById('prog-bar').style.width = `${((i + 1) / lines.length) * 100}%`;
+        statusEl.innerText = isRunning ? "Hoàn thành vẽ!" : "Đã dừng máy.";
+    } catch (err) {
+        console.error("Lỗi trong quá trình chạy CNC:", err);
+        statusEl.innerText = "Lỗi truyền tải!";
+    } finally {
+        isRunning = false;
     }
-
-    isRunning = false;
-    document.getElementById('mac_status').innerText = "Hoàn thành!";
 }
+
+/**
+ * Hàm gửi 6 byte và đợi phản hồi "ok" từ STM32
+ */
 async function send_data(x, y, z) {
-    if (!writer) return;
+    if (!port.writable) return;
 
-    // Chuẩn bị dữ liệu trước
-    let data = new Int16Array([x, y, z]);
-    let buffer = new Uint8Array(data.buffer);
+    const writer = port.writable.getWriter();
+    
+    // Đóng gói Binary chuẩn 6 bytes (Little Endian)
+    // Khớp hoàn toàn với cách STM32 đọc: (received[1]<<8)|received[0]
+    const buffer = new Int16Array([x, y, z]);
+    const rawBytes = new Uint8Array(buffer.buffer);
 
-    // XÓA TRẮNG trạng thái chờ ngay sát nút gửi để không bị "ok" cũ đánh lừa
-    okReceived = false; 
+    okReceived = false; // Reset cờ trước khi gửi gói mới
 
-    await writer.write(buffer); 
+    await writer.write(rawBytes);
+    writer.releaseLock();
 
-    // Đợi phản hồi mới thực sự
+    // Vòng lặp chặn (Wait until OK)
+    // Nó sẽ thoát ra khi luồng readLoop() nhận được chữ "ok" từ STM32
+    let timeout = Date.now();
     while (!okReceived && isRunning) {
-        await new Promise(r => setTimeout(r, 1)); 
+        // Sleep 1ms để trình duyệt không bị "đơ" UI
+        await new Promise(r => setTimeout(r, 1));
+        
+        // Bảo vệ: Nếu quá 10 giây không thấy chip trả lời, tự skip để tránh treo Web
+        if (Date.now() - timeout > 10000) {
+            console.warn("STM32 phản hồi quá chậm (Timeout 10s) tại tọa độ:", x, y);
+            break;
+        }
     }
 }
     const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
