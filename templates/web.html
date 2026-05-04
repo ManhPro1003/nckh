@@ -354,17 +354,17 @@ async function startCNC() {
 async function send_data(x, y, z) {
     if (!writer) return;
 
-    okReceived = false; // Reset trạng thái trước khi gửi
-
+    // Chuẩn bị dữ liệu trước
     let data = new Int16Array([x, y, z]);
     let buffer = new Uint8Array(data.buffer);
 
-    await writer.write(buffer); // Gửi 6 byte xuống STM32
+    // XÓA TRẮNG trạng thái chờ ngay sát nút gửi để không bị "ok" cũ đánh lừa
+    okReceived = false; 
 
-    // CHỐT CHẶN: Đợi cho đến khi okReceived thành true
-    // Không giới hạn thời gian (vòng lặp vô tận cho đến khi có ok)
+    await writer.write(buffer); 
+
+    // Đợi phản hồi mới thực sự
     while (!okReceived && isRunning) {
-        // Chỉ nghỉ 1ms để không treo trình duyệt, nhưng vẫn đứng đợi ở đây
         await new Promise(r => setTimeout(r, 1)); 
     }
 }
