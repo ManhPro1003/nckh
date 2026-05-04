@@ -365,7 +365,7 @@ async function startCNC() {
 
     okReceived = false;
     await writer.write(buffer);
-
+    console.log("SEND:", x, y, z);
     let timeout = 0;
 
     while (!okReceived && isRunning) {
