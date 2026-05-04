@@ -275,98 +275,82 @@
      * Hàm gửi dữ liệu nhị phân (Binary) qua Serial
      * Đảm bảo định dạng 6 bytes (int16_t x 3) Little-endian
      */
-async function startCNC() {
+async function send_data(x, y, z) {
+    if (!writer) return;
+
+    // Chuyển đổi tọa độ sang Buffer 6 bytes (Little Endian - khớp với STM32)
+    const buffer = new ArrayBuffer(6);
+    const view = new DataView(buffer);
+    view.setInt16(0, x, true); // true = Little Endian
+    view.setInt16(2, y, true);
+    view.setInt16(4, z, true);
+
+    okReceived = false;
+
+    try {
+        // Gửi đúng 6 bytes
+        await writer.write(new Uint8Array(buffer));
+        
+        // Chờ phản hồi "ok" từ STM32 để biết motor đã chạy xong vị trí đó
+        let timeout = Date.now();
+        while (!okReceived && isRunning) {
+            // Nếu quá 3s motor không báo "ok", có thể máy bị kẹt hoặc mất kết nối
+            if (Date.now() - timeout > 3000) {
+                console.warn("STM32 phản hồi chậm, kiểm tra lại phần cứng!");
+                break;
+            }
+            await new Promise(r => setTimeout(r, 2)); // Nghỉ 2ms để không treo trình duyệt
+        }
+    } catch (error) {
+        console.error("Lỗi khi gửi dữ liệu:", error);
+    }
+}
+    async function startCNC() {
     if (!port || !generatedGcode || isRunning) return;
 
     isRunning = true;
-    const lines = generatedGcode.split('\n');
+    document.getElementById('mac_status').innerText = "Đang vẽ...";
 
-    let last_x = 0;
-    let last_y = 0;
-    let last_dx = 0;
-    let pen_state = 0;
-    const STEPS_PER_MM = 16;
+    // --- BƯỚC QUAN TRỌNG: ĐỒNG BỘ HÓA ---
+    // Gửi 6 byte '0' để STM32 reset index nhận nếu đang bị lệch
+    const syncBuffer = new Uint8Array([0, 0, 0, 0, 0, 0]);
+    await writer.write(syncBuffer);
+    await new Promise(r => setTimeout(r, 100)); // Chờ 100ms cho chip xử lý rác
+    okReceived = false; 
+    // ------------------------------------
+
+    const lines = generatedGcode.split('\n');
+    let lastX = 0, lastY = 0;
 
     for (let i = 0; i < lines.length; i++) {
         if (!isRunning) break;
-
+        
         let line = lines[i].trim();
         if (!line || line.startsWith(";")) continue;
 
-        // Chỉ nhận đúng G0 / G1
-        const isG0 = /^\s*G0\b/.test(line);
-        const isG1 = /^\s*G1\b/.test(line);
+        // Logic Parse G-Code của bạn (Ví dụ đơn giản)
+        let x = lastX, y = lastY, z = 0; 
+        if (line.includes('G0') || line.includes('G1')) {
+            let matchX = line.match(/X([\d\.-]+)/);
+            let matchY = line.match(/Y([\d\.-]+)/);
+            let isG0 = line.includes('G0'); // G0 là nhấc bút, G1 là hạ bút
 
-        if (isG0) pen_state = 0;
-        else if (isG1) pen_state = 1;
+            if (matchX) x = parseFloat(matchX[1]);
+            if (matchY) y = parseFloat(matchY[1]);
+            z = isG0 ? 0 : 1; // Khớp với logic hu == 0x01 là hạ bút trong code C
 
-        // Lấy X/Y
-        let mx = line.match(/X(-?\d*\.?\d+)/);
-        let my = line.match(/Y(-?\d*\.?\d+)/);
-
-        // Lấy Z nếu có
-        let mz = line.match(/Z(-?\d*\.?\d+)/);
-
-        // Dòng setup như G21, G90, M... thì bỏ qua
-        if (!mx && !my && !mz && !isG0 && !isG1) {
-            continue;
+            // Gửi tọa độ đã nhân với tỷ lệ (Ví dụ: 1mm = 16 bước)
+            await send_data(Math.round(x * 16), Math.round(y * 16), z);
+            
+            lastX = x; lastY = y;
         }
 
-        let x = last_x;
-        let y = last_y;
-
-        if (mx) x = Math.round(parseFloat(mx[1]) * STEPS_PER_MM);
-        if (my) y = Math.round(parseFloat(my[1]) * STEPS_PER_MM);
-
-        // Nếu có Z thì cập nhật pen_state giống Python logic của bạn
-        if (mz) {
-            pen_state = parseFloat(mz[1]) <= 0 ? 1 : 0;
-        }
-
-        if (isNaN(x) || isNaN(y) || isNaN(pen_state)) {
-            console.warn("Skip line lỗi:", line);
-            continue;
-        }
-
-        console.log("SEND:", x, y, pen_state, "|", line);
-        await send_data(x, y, pen_state);
-
-        // chống đảo chiều X
-        let dx = x - last_x;
-        if (y === last_y && dx * last_dx < 0) {
-            continue;
-        }
-        if (dx !== 0) {
-            last_dx = dx;
-        }
-
-        last_x = x;
-        last_y = y;
-
-        document.getElementById('mac_line').innerText = `${i + 1}/${lines.length}`;
-        document.getElementById('mac_pct').innerText = Math.round(((i + 1) / lines.length) * 100);
-        document.getElementById('prog-bar').style.width = `${((i + 1) / lines.length) * 100}%`;
+        // Cập nhật thanh tiến trình
+        updateProgress(i, lines.length);
     }
 
     isRunning = false;
     document.getElementById('mac_status').innerText = "Hoàn thành!";
-}
-async function send_data(x, y, z) {
-    if (!writer) return;
-
-    // Chuẩn bị dữ liệu trước
-    let data = new Int16Array([x, y, z]);
-    let buffer = new Uint8Array(data.buffer);
-
-    // XÓA TRẮNG trạng thái chờ ngay sát nút gửi để không bị "ok" cũ đánh lừa
-    okReceived = false; 
-
-    await writer.write(buffer); 
-
-    // Đợi phản hồi mới thực sự
-    while (!okReceived && isRunning) {
-        await new Promise(r => setTimeout(r, 1)); 
-    }
 }
     const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
     let scale = 1, pointX = 0, pointY = 0, panning = false, startX = 0, startY = 0;
