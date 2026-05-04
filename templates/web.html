@@ -293,52 +293,56 @@ async function startCNC() {
         let line = lines[i].trim();
         if (!line || line.startsWith(";")) continue;
 
-        // ===== GIỐNG PYTHON =====
-        if (line.includes("G0")) {
-            pen_state = 0;
-        } else if (line.includes("G1")) {
-            pen_state = 1;
-        }
+        // Chỉ nhận đúng G0 / G1
+        const isG0 = /^\s*G0\b/.test(line);
+        const isG1 = /^\s*G1\b/.test(line);
 
+        if (isG0) pen_state = 0;
+        else if (isG1) pen_state = 1;
+
+        // Lấy X/Y
         let mx = line.match(/X(-?\d*\.?\d+)/);
         let my = line.match(/Y(-?\d*\.?\d+)/);
+
+        // Lấy Z nếu có
+        let mz = line.match(/Z(-?\d*\.?\d+)/);
+
+        // Dòng setup như G21, G90, M... thì bỏ qua
+        if (!mx && !my && !mz && !isG0 && !isG1) {
+            continue;
+        }
 
         let x = last_x;
         let y = last_y;
 
-        if (mx) {
-            x = Math.round(parseFloat(mx[1]) * STEPS_PER_MM);
+        if (mx) x = Math.round(parseFloat(mx[1]) * STEPS_PER_MM);
+        if (my) y = Math.round(parseFloat(my[1]) * STEPS_PER_MM);
+
+        // Nếu có Z thì cập nhật pen_state giống Python logic của bạn
+        if (mz) {
+            pen_state = parseFloat(mz[1]) <= 0 ? 1 : 0;
         }
 
-        if (my) {
-            y = Math.round(parseFloat(my[1]) * STEPS_PER_MM);
-        }
-
-        // ❌ KHÔNG ÉP VỀ 0 — GIỐNG PYTHON
-        if (isNaN(x) || isNaN(y)) {
-            console.warn("Skip dòng lỗi:", line);
+        if (isNaN(x) || isNaN(y) || isNaN(pen_state)) {
+            console.warn("Skip line lỗi:", line);
             continue;
         }
 
-        // ===== CHỐNG ĐẢO CHIỀU (GIỐNG PYTHON) =====
-        let dx = x - last_x;
+        console.log("SEND:", x, y, pen_state, "|", line);
+        await send_data(x, y, pen_state);
 
+        // chống đảo chiều X
+        let dx = x - last_x;
         if (y === last_y && dx * last_dx < 0) {
             continue;
         }
-
         if (dx !== 0) {
             last_dx = dx;
         }
 
-        console.log("SEND:", x, y, pen_state);
-
-        await send_data(x, y, pen_state);
-
         last_x = x;
         last_y = y;
 
-        // UI
         document.getElementById('mac_line').innerText = `${i + 1}/${lines.length}`;
         document.getElementById('mac_pct').innerText = Math.round(((i + 1) / lines.length) * 100);
         document.getElementById('prog-bar').style.width = `${((i + 1) / lines.length) * 100}%`;
@@ -350,12 +354,6 @@ async function startCNC() {
     async function send_data(x, y, z) {
     if (!writer) return;
 
-    // ❌ KHÔNG ÉP 0
-    if (isNaN(x) || isNaN(y) || isNaN(z)) {
-        console.warn("Dữ liệu lỗi, bỏ qua:", x, y, z);
-        return;
-    }
-
     let buffer = new ArrayBuffer(6);
     let view = new DataView(buffer);
 
@@ -364,21 +362,20 @@ async function startCNC() {
     view.setInt16(4, z, true);
 
     okReceived = false;
-    await writer.write(buffer);
-    console.log("SEND:", x, y, z);
-    let timeout = 0;
+    readBuffer = "";
 
+    await writer.write(buffer);
+
+    let timeout = 0;
     while (!okReceived && isRunning) {
         await new Promise(r => setTimeout(r, 1));
         timeout++;
-
-        if (timeout > 2000) {
-            console.warn("Timeout STM32 tại:", x, y);
+        if (timeout > 3000) {
+            console.warn("Timeout tại:", x, y, z);
             break;
         }
     }
 }
-
     const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
     let scale = 1, pointX = 0, pointY = 0, panning = false, startX = 0, startY = 0;
     function setTransform() { wrapper.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`; }
