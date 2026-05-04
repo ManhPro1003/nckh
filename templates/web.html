@@ -301,15 +301,17 @@
         }
     }
 
+    // ====================================================
+    // THUẬT TOÁN ĐIỀU KHIỂN CHÍNH THỨC
+    // ====================================================
     async function startCNC() {
-        // Kiểm tra an toàn đầu vào
         if (!port) { alert("Vui lòng Bấm KẾT NỐI MÁY trước!"); return; }
         if (!generatedGcode) { alert("Chưa có bản vẽ. Hãy tải ảnh lên trước!"); return; }
         if (isRunning) return;
 
         isRunning = true;
         
-        // Cache các thành phần UI để tăng tốc độ xử lý
+        // Cache UI elements
         const elStatus = document.getElementById('mac_status');
         const elLine = document.getElementById('mac_line');
         const elPct = document.getElementById('mac_pct');
@@ -320,15 +322,15 @@
         const lines = generatedGcode.split('\n');
         const totalLines = lines.length;
         
-        // Khởi tạo các biến trạng thái khớp với logic Python
-        let last_x = 0;
+        // KHỞI TẠO: Phải khớp với tọa độ thực tế lúc bắt đầu
+        let last_x = 0; 
         let last_y = 0;
         let last_dx = 0;
-        let pen_state = 0; // 0: PEN_UP, 1: PEN_DOWN
+        let pen_state = 0; 
         let lastPct = -1;
         const STEPS_PER_MM = 16;
 
-        // Gửi lệnh khởi tạo đưa máy về trạng thái 0
+        // Chỉ gửi (0,0,0) một lần duy nhất để đồng bộ Home lúc bắt đầu
         await sendBinaryData(0, 0, 0);
 
         for (let i = 0; i < lines.length; i++) {
@@ -337,51 +339,41 @@
             let line = lines[i].trim();
             if (!line || line.startsWith(";")) continue;
 
-            // 1. Phân tích lệnh G-code (G0/G1)
-            if (line.includes("G0")) {
-                pen_state = 0; 
-            } else if (line.includes("G1")) {
-                pen_state = 1; 
+            // 1. Cập nhật trạng thái bút (Z) hoặc lệnh G
+            if (line.includes("G0")) pen_state = 0;
+            else if (line.includes("G1")) pen_state = 1;
+            
+            if (line.includes("Z")) {
+                let matchZ = line.match(/Z(-?\d*\.?\d+)/);
+                if (matchZ) pen_state = parseFloat(matchZ[1]) <= 0 ? 1 : 0;
             }
 
-            // 2. Trích xuất tọa độ bằng Regex
-            let matchX = line.match(/X(-?\d*\.?\d+)/);
-            let matchY = line.match(/Y(-?\d*\.?\d+)/);
+            // 2. Lấy tọa độ X, Y
+            let mx = line.match(/X(-?\d*\.?\d+)/);
+            let my = line.match(/Y(-?\d*\.?\d+)/);
 
-            // Chuyển đổi sang đơn vị step. Nếu không có tọa độ mới, dùng lại tọa độ cũ
-            let x = matchX ? Math.round(parseFloat(matchX[1]) * STEPS_PER_MM) : last_x;
-            let y = matchY ? Math.round(parseFloat(matchY[1]) * STEPS_PER_MM) : last_y;
+            // QUAN TRỌNG: Nếu không có X/Y trên dòng này, x và y PHẢI giữ nguyên giá trị cũ
+            let x = mx ? Math.round(parseFloat(mx[1]) * STEPS_PER_MM) : last_x;
+            let y = my ? Math.round(parseFloat(my[1]) * STEPS_PER_MM) : last_y;
 
-            // 3. Thuật toán chống đảo chiều trục X
+            // 3. Logic chống đảo chiều X
             let dx = x - last_x;
-            let skipThisLine = false;
-
-            // Kiểm tra điều kiện đảo hướng trên cùng một đường ngang
             if (y === last_y && dx !== 0 && last_dx !== 0 && (dx * last_dx) < 0) {
-                skipThisLine = true;
+                // Nếu skip ở đây, ta KHÔNG cập nhật last_x, để dòng sau tính lại dx từ điểm cũ
+                continue; 
             }
 
-            // Cập nhật hướng di chuyển cuối cùng
-            if (dx !== 0) {
-                last_dx = dx;
+            if (dx !== 0) last_dx = dx;
+
+            // 4. KIỂM TRA CUỐI CÙNG TRƯỚC KHI GỬI
+            // Nếu tọa độ gửi đi giống hệt tọa độ vừa gửi, và pen_state cũng không đổi, thì bỏ qua
+            if (x === last_x && y === last_y && i > 0) {
+                // Sẽ chỉ bỏ qua nếu đây là dòng bị duplicate tọa độ không đáng có
             }
 
-            // ĐIỂM QUAN TRỌNG: Lưu lại tọa độ trước khi cập nhật
-            let old_x = last_x;
-            let old_y = last_y;
-
-            // Cập nhật tọa độ máy trong bộ nhớ LUÔN LUÔN (kể cả khi skip dòng này)
-            last_x = x;
-            last_y = y;
-
-            // Bỏ qua gửi dữ liệu nếu thỏa mãn chống đảo chiều hoặc không có sự di chuyển thực tế
-            if (skipThisLine) continue;
-            if (x === old_x && y === old_y && i !== 0) continue;
-
-            // 4. Gửi dữ liệu nhị phân xuống STM32
             await sendBinaryData(x, y, pen_state);
 
-            // 5. Cập nhật UI (chỉ cập nhật khi thay đổi số % để mượt máy)
+            // Cập nhật UI
             const pct = Math.round(((i + 1) / totalLines) * 100);
             if (pct !== lastPct) {
                 elLine.innerText = `${i + 1}/${totalLines}`;
@@ -389,14 +381,16 @@
                 elBar.style.width = pct + "%";
                 lastPct = pct;
             }
+
+            // Chỉ cập nhật sau khi đã gửi thành công
+            last_x = x;
+            last_y = y;
         }
 
-        // Kết thúc: Gửi lệnh về gốc tọa độ
         if (isRunning) {
-            await sendBinaryData(0, 0, 0);
+            await sendBinaryData(0, 0, 0); // Đưa máy về Home
             elStatus.innerText = "Hoàn thành xuất sắc!";
         }
-        
         isRunning = false;
     }
 
