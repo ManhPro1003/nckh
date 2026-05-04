@@ -351,29 +351,24 @@ async function startCNC() {
     isRunning = false;
     document.getElementById('mac_status').innerText = "Hoàn thành!";
 }
-    async function send_data(x, y, z) {
+async function send_data(x, y, z) {
     if (!writer) return;
 
     let buffer = new ArrayBuffer(6);
     let view = new DataView(buffer);
-
     view.setInt16(0, x, true);
     view.setInt16(2, y, true);
     view.setInt16(4, z, true);
 
     okReceived = false;
-    readBuffer = "";
-
+    
+    // Thêm một chút trì hoãn nhỏ trước khi gửi để STM32 kịp chuẩn bị
+    await new Promise(r => setTimeout(r, 1)); 
     await writer.write(buffer);
 
-    let timeout = 0;
+    // Chờ phản hồi ok chặt chẽ hơn
     while (!okReceived && isRunning) {
         await new Promise(r => setTimeout(r, 1));
-        timeout++;
-        if (timeout > 3000) {
-            console.warn("Timeout tại:", x, y, z);
-            break;
-        }
     }
 }
     const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
