@@ -354,25 +354,18 @@ async function startCNC() {
 async function send_data(x, y, z) {
     if (!writer) return;
 
-    // Đảm bảo dữ liệu là số nguyên trước khi gửi
-    const payload = new Int16Array([Math.round(x), Math.round(y), Math.round(z)]);
-    
-    okReceived = false;
+    okReceived = false; // Reset trạng thái trước khi gửi
 
-    // Gửi dữ liệu dưới dạng Uint8Array (6 bytes)
-    await writer.write(new Uint8Array(payload.buffer));
+    let data = new Int16Array([x, y, z]);
+    let buffer = new Uint8Array(data.buffer);
 
-    // Đợi phản hồi 'ok' một cách nghiêm ngặt
-    let startWait = Date.now();
+    await writer.write(buffer); // Gửi 6 byte xuống STM32
+
+    // CHỐT CHẶN: Đợi cho đến khi okReceived thành true
+    // Không giới hạn thời gian (vòng lặp vô tận cho đến khi có ok)
     while (!okReceived && isRunning) {
-        // Nghỉ 1ms để giải phóng tài nguyên cho hệ thống xử lý Serial
+        // Chỉ nghỉ 1ms để không treo trình duyệt, nhưng vẫn đứng đợi ở đây
         await new Promise(r => setTimeout(r, 1)); 
-        
-        // Timeout 1 giây để tránh treo trình duyệt nếu STM32 mất kết nối
-        if (Date.now() - startWait > 1000) {
-            console.warn("Mất đồng bộ với STM32 tại:", x, y);
-            break;
-        }
     }
 }
     const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
