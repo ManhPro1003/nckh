@@ -193,13 +193,14 @@
     }
 
     // ====================================================
-    // VŨ KHÍ TỐI THƯỢNG: WEB SERIAL API ĐỒNG BỘ Y HỆT PYTHON
+    // WEB SERIAL API & LOGIC ĐIỀU KHIỂN CNC 
     // ====================================================
     let port;
     let writer;
     let reader;
     let isRunning = false;
     let readBuffer = "";
+    let okReceived = false;
 
     async function connectUSB() {
         if (!("serial" in navigator)) {
@@ -212,7 +213,6 @@
             document.getElementById('btnConnect').style.display = 'none';
             document.getElementById('btnDisconnect').style.display = 'block';
             
-            // QUAN TRỌNG: Giả lập time.sleep(2) của Python chờ STM32 Boot
             document.getElementById('mac_status').innerText = "Đang chờ mạch khởi động (2s)...";
             await new Promise(r => setTimeout(r, 2000));
             document.getElementById('mac_status').innerText = "Đã kết nối máy CNC Sẵn Sàng!";
@@ -221,6 +221,8 @@
             const textDecoder = new TextDecoderStream();
             port.readable.pipeTo(textDecoder.writable);
             reader = textDecoder.readable.getReader();
+            
+            readLoop();
 
         } catch (e) {
             console.error(e);
@@ -228,41 +230,34 @@
         }
     }
 
-    // Hàm đọc Từng Dòng (Block/Sync) chuẩn xác y hệt ser.readline().strip() của Python!
-    async function waitForOk() {
-        while (isRunning) {
-            // Kiểm tra xem trong bộ đệm đã gom đủ 1 dòng chưa (có dấu \n)
-            let newlineIndex = readBuffer.indexOf('\n');
-            if (newlineIndex >= 0) {
-                let line = readBuffer.slice(0, newlineIndex).trim();
-                readBuffer = readBuffer.slice(newlineIndex + 1); // Cắt bỏ phần đã xử lý
-                
-                if (line === "ok" || line.includes("ok")) {
-                    return true;
-                }
-                continue; // Nếu có dòng rác, bỏ qua đọc dòng tiếp
-            }
-
-            // Nếu chưa đủ 1 dòng, ra lệnh đọc tiếp từ USB
-            try {
+    // Vòng lặp đọc dữ liệu độc lập để luôn bắt được chữ "ok"
+    async function readLoop() {
+        try {
+            while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
                 if (value) {
                     readBuffer += value;
+                    let lines = readBuffer.split('\n');
+                    readBuffer = lines.pop(); // Giữ lại phần chưa hoàn chỉnh
+                    
+                    for (let line of lines) {
+                        if (line.trim() === "ok" || line.includes("ok")) {
+                            okReceived = true;
+                        }
+                    }
                 }
-            } catch (e) {
-                console.error(e);
-                break;
             }
+        } catch (error) {
+            console.error("Lỗi đọc Serial:", error);
         }
-        return false;
     }
 
     async function disconnectUSB() {
         isRunning = false;
         try {
-            if (reader) { await reader.cancel(); reader.releaseLock(); }
-            if (writer) { await writer.close(); writer.releaseLock(); }
+            if (reader) { await reader.cancel(); }
+            if (writer) { await writer.close(); }
             if (port) { await port.close(); }
         } catch (e) {}
 
@@ -276,81 +271,132 @@
         document.getElementById('mac_status').innerText = "Đã dừng khẩn cấp";
     }
 
+    /**
+     * Hàm gửi dữ liệu nhị phân (Binary) qua Serial
+     * Đảm bảo định dạng 6 bytes (int16_t x 3) Little-endian
+     */
+    async function sendBinaryData(x, y, pen) {
+        if (!writer) return;
+
+        const buffer = new ArrayBuffer(6);
+        const view = new DataView(buffer);
+        
+        view.setInt16(0, x, true); 
+        view.setInt16(2, y, true);
+        view.setInt16(4, pen, true);
+
+        okReceived = false;
+        await writer.write(new Uint8Array(buffer));
+
+        // Cơ chế phản hồi: Chờ "ok" từ vi điều khiển trước khi gửi lệnh tiếp theo
+        let timeoutCounter = 0;
+        while (!okReceived && isRunning) {
+            await new Promise(r => setTimeout(r, 2));
+            timeoutCounter += 2;
+            // Bảo vệ: Nếu sau 10 giây máy không phản hồi, tự thoát để tránh treo trình duyệt
+            if (timeoutCounter > 10000) {
+                console.log("Timeout chờ phản hồi ok");
+                break; 
+            }
+        }
+    }
+
     async function startCNC() {
+        // Kiểm tra an toàn đầu vào
         if (!port) { alert("Vui lòng Bấm KẾT NỐI MÁY trước!"); return; }
         if (!generatedGcode) { alert("Chưa có bản vẽ. Hãy tải ảnh lên trước!"); return; }
         if (isRunning) return;
 
         isRunning = true;
-        readBuffer = ""; // Xóa sạch rác cũ
-        document.getElementById('mac_status').innerText = "Đang chạy CNC...";
+        
+        // Cache các thành phần UI để tăng tốc độ xử lý
+        const elStatus = document.getElementById('mac_status');
+        const elLine = document.getElementById('mac_line');
+        const elPct = document.getElementById('mac_pct');
+        const elBar = document.getElementById('prog-bar');
+        
+        elStatus.innerText = "Đang chạy CNC...";
 
         const lines = generatedGcode.split('\n');
-        let totalLines = lines.length;
+        const totalLines = lines.length;
         
-        // Khai báo chuẩn y hệt code mophong.py
-        let last_x = 0, last_y = 0, last_dx = 0;
-        let pen_state = 0; 
+        // Khởi tạo các biến trạng thái khớp với logic Python
+        let last_x = 0;
+        let last_y = 0;
+        let last_dx = 0;
+        let pen_state = 0; // 0: PEN_UP, 1: PEN_DOWN
+        let lastPct = -1;
         const STEPS_PER_MM = 16;
+
+        // Gửi lệnh khởi tạo đưa máy về trạng thái 0
+        await sendBinaryData(0, 0, 0);
 
         for (let i = 0; i < lines.length; i++) {
             if (!isRunning) break;
 
-            document.getElementById('mac_line').innerText = `${i+1}/${totalLines}`;
-            const pct = Math.round(((i+1)/totalLines)*100);
-            document.getElementById('mac_pct').innerText = pct;
-            document.getElementById('prog-bar').style.width = pct + "%";
-
             let line = lines[i].trim();
             if (!line || line.startsWith(";")) continue;
 
-            if (line.includes("G0")) pen_state = 0;
-            else if (line.includes("G1")) pen_state = 1;
+            // 1. Phân tích lệnh G-code (G0/G1)
+            if (line.includes("G0")) {
+                pen_state = 0; 
+            } else if (line.includes("G1")) {
+                pen_state = 1; 
+            }
 
+            // 2. Trích xuất tọa độ bằng Regex
             let matchX = line.match(/X(-?\d*\.?\d+)/);
             let matchY = line.match(/Y(-?\d*\.?\d+)/);
 
+            // Chuyển đổi sang đơn vị step. Nếu không có tọa độ mới, dùng lại tọa độ cũ
             let x = matchX ? Math.round(parseFloat(matchX[1]) * STEPS_PER_MM) : last_x;
             let y = matchY ? Math.round(parseFloat(matchY[1]) * STEPS_PER_MM) : last_y;
 
-            // Logic chống đảo chiều X được BÊ NGUYÊN TỪ mophong.py
+            // 3. Thuật toán chống đảo chiều trục X
             let dx = x - last_x;
-            if (y === last_y && (dx * last_dx) < 0) {
-                continue; // Bỏ qua vẽ nếu đảo chiều (giống code cũ của bạn Mạnh)
+            let skipThisLine = false;
+
+            // Kiểm tra điều kiện đảo hướng trên cùng một đường ngang
+            if (y === last_y && dx !== 0 && last_dx !== 0 && (dx * last_dx) < 0) {
+                skipThisLine = true;
             }
+
+            // Cập nhật hướng di chuyển cuối cùng
             if (dx !== 0) {
                 last_dx = dx;
             }
 
-            // Gói 6 byte Little-Endian y hệt Python struct.pack("<hhh")
-            let buffer = new ArrayBuffer(6);
-            let view = new DataView(buffer);
-            view.setInt16(0, x, true); 
-            view.setInt16(2, y, true);
-            view.setInt16(4, pen_state, true);
+            // ĐIỂM QUAN TRỌNG: Lưu lại tọa độ trước khi cập nhật
+            let old_x = last_x;
+            let old_y = last_y;
 
-            // Bắt buộc gói thành Uint8Array để dữ liệu truyền qua cổng COM không bị suy hao
-            await writer.write(new Uint8Array(buffer));
-
-            // CHẶN LUỒNG: Bắt buộc chờ STM32 trả về chữ "ok" mới được đi tiếp!
-            let ok = await waitForOk();
-            if (!ok) break;
-
+            // Cập nhật tọa độ máy trong bộ nhớ LUÔN LUÔN (kể cả khi skip dòng này)
             last_x = x;
             last_y = y;
+
+            // Bỏ qua gửi dữ liệu nếu thỏa mãn chống đảo chiều hoặc không có sự di chuyển thực tế
+            if (skipThisLine) continue;
+            if (x === old_x && y === old_y && i !== 0) continue;
+
+            // 4. Gửi dữ liệu nhị phân xuống STM32
+            await sendBinaryData(x, y, pen_state);
+
+            // 5. Cập nhật UI (chỉ cập nhật khi thay đổi số % để mượt máy)
+            const pct = Math.round(((i + 1) / totalLines) * 100);
+            if (pct !== lastPct) {
+                elLine.innerText = `${i + 1}/${totalLines}`;
+                elPct.innerText = pct;
+                elBar.style.width = pct + "%";
+                lastPct = pct;
+            }
         }
 
-        // Về home
+        // Kết thúc: Gửi lệnh về gốc tọa độ
         if (isRunning) {
-            let buffer = new ArrayBuffer(6);
-            let view = new DataView(buffer);
-            view.setInt16(0, 0, true);
-            view.setInt16(2, 0, true);
-            view.setInt16(4, 0, true);
-            await writer.write(new Uint8Array(buffer));
-            
-            document.getElementById('mac_status').innerText = "Hoàn thành xuất sắc!";
+            await sendBinaryData(0, 0, 0);
+            elStatus.innerText = "Hoàn thành xuất sắc!";
         }
+        
         isRunning = false;
     }
 
