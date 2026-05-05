@@ -110,6 +110,10 @@
             <label>Làm mượt nét: <span id="smVal" class="val">1.0</span></label>
             <input type="range" id="smoothing" min="0.1" max="5.0" step="0.1" value="1.0" oninput="updateVal('smVal', this.value)" onchange="triggerUpdate()">
         </div>
+        <div class="control-group" id="grp_density">
+    <label>Mật độ nét (Sketch/Spiral): <span id="denVal" class="val">30</span></label>
+    <input type="range" id="density" min="10" max="100" value="30" oninput="updateVal('denVal', this.value)" onchange="triggerUpdate()">
+</div>
 
         <div class="control-group" style="border-left: 4px solid #ffaa00; background: #2a2a2a;">
             <label style="color: #ffaa00; font-size: 15px;">🔌 TRẠM ĐIỀU KHIỂN CNC (Web Serial)</label>
@@ -173,7 +177,7 @@
         f.append('target_width', document.getElementById('targetWidth').value);
         f.append('threshold', document.getElementById('threshold').value);
         f.append('smoothing', document.getElementById('smoothing').value);
-        f.append('density', 30);
+        f.append('density', document.getElementById('density').value);
         f.append('pen_size', document.getElementById('pen_size').value);
         f.append('feedrate', 1500);
         f.append('z_up', document.getElementById('z_up').value);
@@ -275,99 +279,125 @@
      * Hàm gửi dữ liệu nhị phân (Binary) qua Serial
      * Đảm bảo định dạng 6 bytes (int16_t x 3) Little-endian
      */
-async function startCNC() {
-    if (!port || !generatedGcode || isRunning) return;
+    async function sendBinaryData(x, y, pen) {
+        if (!writer) return;
 
-    isRunning = true;
-    const lines = generatedGcode.split('\n');
+        const buffer = new ArrayBuffer(6);
+        const view = new DataView(buffer);
+        
+        view.setInt16(0, x, true); 
+        view.setInt16(2, y, true);
+        view.setInt16(4, pen, true);
 
-    let last_x = 0;
-    let last_y = 0;
-    let last_dx = 0;
-    let pen_state = 0;
-    const STEPS_PER_MM = 16;
+        okReceived = false;
+        await writer.write(new Uint8Array(buffer));
 
-    for (let i = 0; i < lines.length; i++) {
-        if (!isRunning) break;
-
-        let line = lines[i].trim();
-        if (!line || line.startsWith(";")) continue;
-
-        // Chỉ nhận đúng G0 / G1
-        const isG0 = /^\s*G0\b/.test(line);
-        const isG1 = /^\s*G1\b/.test(line);
-
-        if (isG0) pen_state = 0;
-        else if (isG1) pen_state = 1;
-
-        // Lấy X/Y
-        let mx = line.match(/X(-?\d*\.?\d+)/);
-        let my = line.match(/Y(-?\d*\.?\d+)/);
-
-        // Lấy Z nếu có
-        let mz = line.match(/Z(-?\d*\.?\d+)/);
-
-        // Dòng setup như G21, G90, M... thì bỏ qua
-        if (!mx && !my && !mz && !isG0 && !isG1) {
-            continue;
+        // Cơ chế phản hồi: Chờ "ok" từ vi điều khiển trước khi gửi lệnh tiếp theo
+        let timeoutCounter = 0;
+        while (!okReceived && isRunning) {
+            await new Promise(r => setTimeout(r, 2));
+            timeoutCounter += 2;
+            // Bảo vệ: Nếu sau 10 giây máy không phản hồi, tự thoát để tránh treo trình duyệt
+            if (timeoutCounter > 10000) {
+                console.log("Timeout chờ phản hồi ok");
+                break; 
+            }
         }
-
-        let x = last_x;
-        let y = last_y;
-
-        if (mx) x = Math.round(parseFloat(mx[1]) * STEPS_PER_MM);
-        if (my) y = Math.round(parseFloat(my[1]) * STEPS_PER_MM);
-
-        // Nếu có Z thì cập nhật pen_state giống Python logic của bạn
-        if (mz) {
-            pen_state = parseFloat(mz[1]) <= 0 ? 1 : 0;
-        }
-
-        if (isNaN(x) || isNaN(y) || isNaN(pen_state)) {
-            console.warn("Skip line lỗi:", line);
-            continue;
-        }
-
-        console.log("SEND:", x, y, pen_state, "|", line);
-        await send_data(x, y, pen_state);
-
-        // chống đảo chiều X
-        let dx = x - last_x;
-        if (y === last_y && dx * last_dx < 0) {
-            continue;
-        }
-        if (dx !== 0) {
-            last_dx = dx;
-        }
-
-        last_x = x;
-        last_y = y;
-
-        document.getElementById('mac_line').innerText = `${i + 1}/${lines.length}`;
-        document.getElementById('mac_pct').innerText = Math.round(((i + 1) / lines.length) * 100);
-        document.getElementById('prog-bar').style.width = `${((i + 1) / lines.length) * 100}%`;
     }
 
-    isRunning = false;
-    document.getElementById('mac_status').innerText = "Hoàn thành!";
-}
-async function send_data(x, y, z) {
-    if (!writer) return;
+    // ====================================================
+    // THUẬT TOÁN ĐIỀU KHIỂN CHÍNH THỨC
+    // ====================================================
+    async function startCNC() {
+        if (!port) { alert("Vui lòng Bấm KẾT NỐI MÁY trước!"); return; }
+        if (!generatedGcode) { alert("Chưa có bản vẽ. Hãy tải ảnh lên trước!"); return; }
+        if (isRunning) return;
 
-    // Chuẩn bị dữ liệu trước
-    let data = new Int16Array([x, y, z]);
-    let buffer = new Uint8Array(data.buffer);
+        isRunning = true;
+        
+        // Cache UI elements
+        const elStatus = document.getElementById('mac_status');
+        const elLine = document.getElementById('mac_line');
+        const elPct = document.getElementById('mac_pct');
+        const elBar = document.getElementById('prog-bar');
+        
+        elStatus.innerText = "Đang chạy CNC...";
 
-    // XÓA TRẮNG trạng thái chờ ngay sát nút gửi để không bị "ok" cũ đánh lừa
-    okReceived = false; 
+        const lines = generatedGcode.split('\n');
+        const totalLines = lines.length;
+        
+        // KHỞI TẠO: Phải khớp với tọa độ thực tế lúc bắt đầu
+        let last_x = 0; 
+        let last_y = 0;
+        let last_dx = 0;
+        let pen_state = 0; 
+        let lastPct = -1;
+        const STEPS_PER_MM = 16;
 
-    await writer.write(buffer); 
+        // Chỉ gửi (0,0,0) một lần duy nhất để đồng bộ Home lúc bắt đầu
+        await sendBinaryData(0, 0, 0);
 
-    // Đợi phản hồi mới thực sự
-    while (!okReceived && isRunning) {
-        await new Promise(r => setTimeout(r, 1)); 
+        for (let i = 0; i < lines.length; i++) {
+            if (!isRunning) break;
+
+            let line = lines[i].trim();
+            if (!line || line.startsWith(";")) continue;
+
+            // 1. Cập nhật trạng thái bút (Z) hoặc lệnh G
+            if (line.includes("G0")) pen_state = 0;
+            else if (line.includes("G1")) pen_state = 1;
+            
+            if (line.includes("Z")) {
+                let matchZ = line.match(/Z(-?\d*\.?\d+)/);
+                if (matchZ) pen_state = parseFloat(matchZ[1]) <= 0 ? 1 : 0;
+            }
+
+            // 2. Lấy tọa độ X, Y
+            let mx = line.match(/X(-?\d*\.?\d+)/);
+            let my = line.match(/Y(-?\d*\.?\d+)/);
+
+            // QUAN TRỌNG: Nếu không có X/Y trên dòng này, x và y PHẢI giữ nguyên giá trị cũ
+            let x = mx ? Math.round(parseFloat(mx[1]) * STEPS_PER_MM) : last_x;
+            let y = my ? Math.round(parseFloat(my[1]) * STEPS_PER_MM) : last_y;
+
+            // 3. Logic chống đảo chiều X
+            let dx = x - last_x;
+            if (y === last_y && dx !== 0 && last_dx !== 0 && (dx * last_dx) < 0) {
+                // Nếu skip ở đây, ta KHÔNG cập nhật last_x, để dòng sau tính lại dx từ điểm cũ
+                continue; 
+            }
+
+            if (dx !== 0) last_dx = dx;
+
+            // 4. KIỂM TRA CUỐI CÙNG TRƯỚC KHI GỬI
+            // Nếu tọa độ gửi đi giống hệt tọa độ vừa gửi, và pen_state cũng không đổi, thì bỏ qua
+            if (x === last_x && y === last_y && i > 0) {
+                // Sẽ chỉ bỏ qua nếu đây là dòng bị duplicate tọa độ không đáng có
+            }
+
+            await sendBinaryData(x, y, pen_state);
+
+            // Cập nhật UI
+            const pct = Math.round(((i + 1) / totalLines) * 100);
+            if (pct !== lastPct) {
+                elLine.innerText = `${i + 1}/${totalLines}`;
+                elPct.innerText = pct;
+                elBar.style.width = pct + "%";
+                lastPct = pct;
+            }
+
+            // Chỉ cập nhật sau khi đã gửi thành công
+            last_x = x;
+            last_y = y;
+        }
+
+        if (isRunning) {
+            await sendBinaryData(0, 0, 0); // Đưa máy về Home
+            elStatus.innerText = "Hoàn thành xuất sắc!";
+        }
+        isRunning = false;
     }
-}
+
     const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
     let scale = 1, pointX = 0, pointY = 0, panning = false, startX = 0, startY = 0;
     function setTransform() { wrapper.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`; }
