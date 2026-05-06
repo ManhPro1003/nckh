@@ -3,24 +3,23 @@ import cv2
 import numpy as np
 import os
 import math
+import re
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# --- CÁC THUẬT TOÁN TẠO G-CODE ---
 def generate_svg_grid_mm(w_mm, h_mm):
     grid = []
-    for i in range(0, int(w_mm) + 1):
-        grid.append(f'<line x1="{i}" y1="0" x2="{i}" y2="{h_mm}" stroke="#333" stroke-width="0.2"/>')
-    for i in range(0, int(h_mm) + 1):
-        grid.append(f'<line x1="0" y1="{i}" x2="{w_mm}" y2="{i}" stroke="#333" stroke-width="0.2"/>')
+    for i in range(0, int(w_mm) + 1): grid.append(f'<line x1="{i}" y1="0" x2="{i}" y2="{h_mm}" stroke="#333" stroke-width="0.2"/>')
+    for i in range(0, int(h_mm) + 1): grid.append(f'<line x1="0" y1="{i}" x2="{w_mm}" y2="{i}" stroke="#333" stroke-width="0.2"/>')
     for i in range(0, int(w_mm) + 1, 10):
         grid.append(f'<line x1="{i}" y1="0" x2="{i}" y2="{h_mm}" stroke="#555" stroke-width="0.5"/>')
         grid.append(f'<text x="{i + 1}" y="4" fill="#888" font-size="3" font-family="sans-serif">{i}</text>')
     for i in range(0, int(h_mm) + 1, 10):
         grid.append(f'<line x1="0" y1="{i}" x2="{w_mm}" y2="{i}" stroke="#555" stroke-width="0.5"/>')
-        if i > 0:
-            grid.append(f'<text x="1" y="{i - 1}" fill="#888" font-size="3" font-family="sans-serif">{i}</text>')
+        if i > 0: grid.append(f'<text x="1" y="{i - 1}" fill="#888" font-size="3" font-family="sans-serif">{i}</text>')
     return "".join(grid)
 
 def process_pcb(gray_img, scale, target_width_mm, feedrate, thresh_val, pen_size_mm, z_up, z_down):
@@ -178,8 +177,24 @@ def process_spiral(gray_img, scale, target_width_mm, feedrate, density, pen_size
 def process_image(img_path, main_mode, art_style, target_width_mm, feedrate, thresh_val, smooth_val, density, pen_size_mm, z_up, z_down, g_scale):
     img = cv2.imread(img_path)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # === TÍNH NĂNG MỚI: TỰ ĐỘNG CẮT PHẦN THỪA (AUTO-CROP) ===
+    _, mask = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
+    coords = cv2.findNonZero(mask)
+    if coords is not None:
+        x, y, w, h = cv2.boundingRect(coords)
+        pad_x = int(w * 0.02)
+        pad_y = int(h * 0.02)
+        x_start = max(0, x - pad_x)
+        y_start = max(0, y - pad_y)
+        x_end = min(gray.shape[1], x + w + pad_x)
+        y_end = min(gray.shape[0], y + h + pad_y)
+        gray = gray[y_start:y_end, x_start:x_end]
+    # =======================================================
+        
     actual_width_mm = target_width_mm * (g_scale / 100.0)
     scale = actual_width_mm / gray.shape[1]
+    
     if main_mode == 'pcb': return process_pcb(gray, scale, actual_width_mm, feedrate, thresh_val, pen_size_mm, z_up, z_down)
     if main_mode == 'art' and art_style == 'spiral': return process_spiral(gray, scale, actual_width_mm, feedrate, density, pen_size_mm, z_up, z_down)
     if main_mode == 'art' and art_style == 'sketch': return process_sketch(gray, scale, actual_width_mm, feedrate, density, thresh_val, pen_size_mm, z_up, z_down)
@@ -202,9 +217,10 @@ def generate():
     z_up = float(request.form.get('z_up', 5.0))
     z_down = float(request.form.get('z_down', 0.0))
     g_scale = float(request.form.get('g_scale', 100.0))
+    
     filepath = os.path.join(UPLOAD_FOLDER, file.filename)
     file.save(filepath)
     gcode, svg = process_image(filepath, mode, style, width, feed, thresh, smooth, dens, pen_size, z_up, z_down, g_scale)
     return jsonify({'gcode': gcode, 'svg': svg})
 
-if __name__ == '__main__': app.run(debug=True, port=5000)
+if __name__ == '__main__': app.run(debug=True, port=7860, host="0.0.0.0")
