@@ -47,7 +47,6 @@
         .progress-container { width: 100%; background: #222; height: 15px; border-radius: 5px; margin-top: 10px; overflow: hidden; }
         #prog-bar { height: 100%; background: #ffaa00; width: 0%; transition: width 0.2s; }
         
-        /* CSS cho Cửa sổ Theo dõi tiến trình (Live Tracking Modal) */
         #live-modal {
             display: none; position: fixed; top: 30px; left: 450px; width: 500px; height: 500px;
             background: #111; border: 2px solid #00f2fe; border-radius: 8px; z-index: 10000;
@@ -84,7 +83,7 @@
             <label>Chế độ hoạt động:</label>
             <select id="main_mode" onchange="updateUI()">
                 <option value="art">Vẽ Hình ảnh / Nghệ thuật</option>
-                <option value="pcb">Vẽ Mạch PCB (Tô đặc)</option>
+                <option value="pcb">Vẽ Mạch PCB (Từ PDF 1:1)</option>
             </select>
         </div>
         <div class="control-group" id="grp_style">
@@ -96,17 +95,31 @@
             </select>
         </div>
         <div class="control-group">
-            <label>Tải ảnh đầu vào:</label>
-            <input type="file" id="imageInput" accept="image/*" onchange="triggerUpdate()">
+            <label>Tải file (Hỗ trợ Ảnh & PDF Altium):</label>
+            <input type="file" id="imageInput" accept="image/*, application/pdf" onchange="triggerUpdate()">
+            <small style="color:#00f2fe; display:none; margin-top:5px;" id="native_size_info">Kích cỡ gốc: Chờ tải file...</small>
         </div>
-        <div class="control-group">
-            <label>Kích thước chiều ngang mặc định (mm):</label>
-            <input type="number" id="targetWidth" value="100">
-        </div>
+        
         <div class="control-group" style="border-left: 4px solid #ff007f;">
-            <label>Tỷ lệ phóng đại G-Code (%): <span id="gsVal" class="val">100</span></label>
+            <div id="size_art_view">
+                <label>Kích thước bề ngang (mm):</label>
+                <input type="number" id="targetWidthArt" value="100" step="1" onchange="triggerUpdate()">
+            </div>
+            
+            <div id="size_pcb_view" style="display: none;">
+                <label style="color:#ff007f; font-weight:bold;">Kích thước thực tế trên giấy:</label>
+                <div style="display: flex; gap: 5px;">
+                    <input type="number" id="targetWidthPcb" value="0" step="0.1" placeholder="Rộng (mm)" onchange="triggerUpdate()">
+                    <span style="line-height: 35px;">x</span>
+                    <input type="number" id="targetHeightPcb" value="0" step="0.1" placeholder="Cao (mm)" onchange="triggerUpdate()">
+                </div>
+                <small style="color:#888;">(Upload PDF Altium, hệ thống sẽ tự điền chính xác kích thước mm vào đây)</small>
+            </div>
+            
+            <label style="margin-top: 10px;">Tỷ lệ phóng đại thêm (%): <span id="gsVal" class="val">100</span></label>
             <input type="range" id="g_scale" min="10" max="1000" value="100" oninput="updateVal('gsVal', this.value)" onchange="triggerUpdate()">
         </div>
+        
         <div class="control-group" style="border-left: 4px solid #00f2fe;">
             <label>Z Nhấc bút (mm):</label>
             <input type="number" id="z_up" value="5.0" step="0.5">
@@ -126,18 +139,17 @@
             <input type="range" id="smoothing" min="0.1" max="5.0" step="0.1" value="1.0" oninput="updateVal('smVal', this.value)" onchange="triggerUpdate()">
         </div>
         
-        <!-- TÍNH NĂNG MẬT ĐỘ NÉT -->
         <div class="control-group" id="grp_density" style="display: none;">
             <label>Mật độ nét (Sketch/Spiral): <span id="denVal" class="val">30</span></label>
             <input type="range" id="density" min="10" max="100" value="30" oninput="updateVal('denVal', this.value)" onchange="triggerUpdate()">
         </div>
 
         <div class="control-group" style="border-left: 4px solid #ffaa00; background: #2a2a2a;">
-            <label style="color: #ffaa00; font-size: 15px;">🔌 TRẠM ĐIỀU KHIỂN CNC (Web Serial Cloud)</label>
-            
+            <label style="color: #ffaa00; font-size: 15px;">🔌 TRẠM ĐIỀU KHIỂN CNC (Web Serial HF)</label>
+
             <div style="display: flex; gap: 5px; margin-top: 10px;">
-                <button type="button" class="btn-usb" id="btnConnect" style="background:#17a2b8; flex:1;" onclick="connectUSB()">KẾT NỐI MÁY CNC (USB)</button>
-                <button type="button" class="btn-usb" id="btnDisconnect" style="background:#dc3545; flex:1; display:none;" onclick="disconnectUSB()">NGẮT KẾT NỐI</button>
+                <button type="button" class="btn-usb" id="btnConnect" style="background:#17a2b8; flex:1;" onclick="connectUSB()">KẾT NỐI MÁY (USB COM)</button>
+                <button type="button" class="btn-usb" id="btnDisconnect" style="background:#dc3545; flex:1; display:none;" onclick="disconnectUSB()">NGẮT</button>
             </div>
 
             <div style="margin-top: 15px;">
@@ -151,7 +163,6 @@
                     <button type="button" class="btn-usb" style="background:#dc3545; flex:1; font-size: 16px;" onclick="stopCNC()">🛑 DỪNG</button>
                 </div>
                 
-                <!-- NÚT MỞ TÍNH NĂNG THEO DÕI VẼ MỚI -->
                 <button type="button" class="btn-usb" style="background:#8a2be2; margin-top: 10px;" onclick="toggleLiveTracker()">👁️ MỞ CỬA SỔ THEO DÕI VẼ</button>
             </div>
         </div>
@@ -162,11 +173,10 @@
 
 <div class="main-content">
     <div id="preview-container">
-        <div id="pan-zoom-wrapper"><div id="svg-content" style="color:#444; text-align:center; padding-top: 40vh; font-size: 18px;">Tải ảnh lên để bắt đầu xử lý</div></div>
+        <div id="pan-zoom-wrapper"><div id="svg-content" style="color:#444; text-align:center; padding-top: 40vh; font-size: 18px;">Tải ảnh/PDF lên để bắt đầu xử lý</div></div>
     </div>
 </div>
 
-<!-- Giao diện Cửa sổ phụ Live Tracking -->
 <div id="live-modal">
     <div class="modal-header">
         <span style="color:#00f2fe; font-weight:bold;">👁️ THEO DÕI TIẾN TRÌNH VẼ</span>
@@ -185,6 +195,8 @@
     });
 
     let generatedGcode = "", debounce;
+    let current_mac_line = 0; 
+
     function updateVal(id, v) { document.getElementById(id).innerText = v; }
     
     function updateUI() {
@@ -195,6 +207,10 @@
         document.getElementById('grp_style').style.display = isPcb ? 'none' : 'block';
         document.getElementById('grp_smooth').style.display = isPcb ? 'none' : 'block';
         document.getElementById('grp_density').style.display = (!isPcb && (style === 'sketch' || style === 'spiral')) ? 'block' : 'none';
+        
+        document.getElementById('size_art_view').style.display = isPcb ? 'none' : 'block';
+        document.getElementById('size_pcb_view').style.display = isPcb ? 'block' : 'none';
+        document.getElementById('native_size_info').style.display = isPcb ? 'block' : 'none';
         
         triggerUpdate();
     }
@@ -207,10 +223,20 @@
 
     async function generate() {
         const f = new FormData();
+        const mode = document.getElementById('main_mode').value;
+        
         f.append('image', document.getElementById('imageInput').files[0]);
-        f.append('main_mode', document.getElementById('main_mode').value);
+        f.append('main_mode', mode);
         f.append('art_style', document.getElementById('art_style').value);
-        f.append('target_width', document.getElementById('targetWidth').value);
+        
+        if (mode === 'pcb') {
+            f.append('target_width', document.getElementById('targetWidthPcb').value);
+            f.append('target_height', document.getElementById('targetHeightPcb').value);
+        } else {
+            f.append('target_width', document.getElementById('targetWidthArt').value);
+            f.append('target_height', 0); 
+        }
+        
         f.append('threshold', document.getElementById('threshold').value);
         f.append('smoothing', document.getElementById('smoothing').value);
         f.append('density', document.getElementById('density').value || 30);
@@ -222,6 +248,13 @@
 
         const r = await fetch('/generate', { method: 'POST', body: f });
         const res = await r.json();
+        
+        if (mode === 'pcb') {
+            document.getElementById('native_size_info').innerText = `Kích cỡ gốc: ${res.native_px_w} x ${res.native_px_h} px`;
+            document.getElementById('targetWidthPcb').value = res.calc_w.toFixed(2);
+            document.getElementById('targetHeightPcb').value = res.calc_h.toFixed(2);
+        }
+
         generatedGcode = res.gcode;
         document.getElementById('svg-content').innerHTML = res.svg;
         document.getElementById('dlBtn').style.display = 'block';
@@ -236,7 +269,7 @@
     }
 
     // ====================================================
-    // WEB SERIAL API & LOGIC ĐIỀU KHIỂN CNC CLOUD
+    // THAY THẾ PYSERIAL BẰNG WEB SERIAL API (DÀNH CHO CLOUD)
     // ====================================================
     let port;
     let writer;
@@ -247,7 +280,7 @@
 
     async function connectUSB() {
         if (!("serial" in navigator)) {
-            alert("Trình duyệt không hỗ trợ Web Serial!"); return;
+            alert("Trình duyệt không hỗ trợ Web Serial. Hãy dùng Chrome hoặc Edge trên máy tính!"); return;
         }
         try {
             port = await navigator.serial.requestPort();
@@ -265,11 +298,11 @@
             port.readable.pipeTo(textDecoder.writable);
             reader = textDecoder.readable.getReader();
             
-            readLoop();
+            readLoop(); // Bắt đầu vòng lặp đọc ngầm
 
         } catch (e) {
             console.error(e);
-            alert("Lỗi kết nối. Vui lòng cắm lại cáp USB!");
+            alert("Lỗi kết nối. Vui lòng kiểm tra lại cáp USB!");
         }
     }
 
@@ -281,7 +314,7 @@
                 if (value) {
                     readBuffer += value;
                     let lines = readBuffer.split('\n');
-                    readBuffer = lines.pop();
+                    readBuffer = lines.pop(); // Giữ lại phần chưa có ký tự xuống dòng
                     
                     for (let line of lines) {
                         if (line.trim() === "ok" || line.includes("ok")) {
@@ -292,6 +325,7 @@
             }
         } catch (error) {
             console.error("Lỗi đọc Serial:", error);
+            disconnectUSB();
         }
     }
 
@@ -316,9 +350,9 @@
     async function sendBinaryData(x, y, pen) {
         if (!writer) return;
 
+        // Đóng gói 6 byte (Chuẩn Little Endian)
         const buffer = new ArrayBuffer(6);
         const view = new DataView(buffer);
-        
         view.setInt16(0, x, true); 
         view.setInt16(2, y, true);
         view.setInt16(4, pen, true);
@@ -326,20 +360,21 @@
         okReceived = false;
         await writer.write(new Uint8Array(buffer));
 
+        // Vòng lặp chờ phản hồi ok, CÓ NHƯỜNG LUỒNG CHỐNG TREO TRÌNH DUYỆT
         let timeoutCounter = 0;
         while (!okReceived && isRunning) {
-            await new Promise(r => setTimeout(r, 2));
+            await new Promise(r => setTimeout(r, 2)); // Nghỉ 2ms để web không bị treo
             timeoutCounter += 2;
-            if (timeoutCounter > 10000) {
-                console.log("Timeout chờ phản hồi ok");
+            if (timeoutCounter > 10000) { // Timeout 10s
+                console.log("Timeout chờ phản hồi ok từ STM32");
                 break; 
             }
         }
     }
 
     async function startCNC() {
-        if (!port) { alert("Vui lòng Bấm KẾT NỐI MÁY trước!"); return; }
-        if (!generatedGcode) { alert("Chưa có bản vẽ. Hãy tải ảnh lên trước!"); return; }
+        if (!port) { alert("Vui lòng KẾT NỐI MÁY qua cổng USB trước!"); return; }
+        if (!generatedGcode) { alert("Chưa có G-code. Hãy tải ảnh/PDF lên trước!"); return; }
         if (isRunning) return;
 
         isRunning = true;
@@ -354,13 +389,19 @@
         const lines = generatedGcode.split('\n');
         const totalLines = lines.length;
         
-        let last_x = 0, last_y = 0, last_dx = 0, pen_state = 0, lastPct = -1;
-        const STEPS_PER_MM = 16;
+        // Cố định Microstep 4 -> 100 xung / mm (Khớp với Python Localhost cũ)
+        const STEPS_PER_MM = 100.0;
+        
+        let last_x = 0, last_y = 0, last_dx = 0;
+        let pen_state = 0; // 0: Lên, 1: Xuống
+        let lastPct = -1;
 
+        // Gửi lệnh gốc ban đầu
         await sendBinaryData(0, 0, 0);
 
-        for (let i = 0; i < lines.length; i++) {
+        for (let i = 0; i < totalLines; i++) {
             if (!isRunning) break;
+            current_mac_line = i;
 
             let line = lines[i].trim();
             if (!line || line.startsWith(";")) continue;
@@ -379,20 +420,19 @@
             let x = mx ? Math.round(parseFloat(mx[1]) * STEPS_PER_MM) : last_x;
             let y = my ? Math.round(parseFloat(my[1]) * STEPS_PER_MM) : last_y;
 
+            // -- THUẬT TOÁN CHỐNG ĐẢO CHIỀU CỰC KỲ ỔN ĐỊNH --
             let dx = x - last_x;
-            if (y === last_y && dx !== 0 && last_dx !== 0 && (dx * last_dx) < 0) {
+            if (pen_state === 1 && y === last_y && dx !== 0 && last_dx !== 0 && (dx * last_dx) < 0) {
                 continue; 
             }
-
-            if (dx !== 0) last_dx = dx;
-
-            if (x === last_x && y === last_y && i > 0) {
-                // Skip duplicate
+            if (pen_state === 1 && dx !== 0) {
+                last_dx = dx;
             }
 
+            // Gửi dữ liệu an toàn
             await sendBinaryData(x, y, pen_state);
 
-            // Cập nhật UI & Vẽ Live Tracking theo từng % để tối ưu hiệu năng
+            // Cập nhật UI và Live Tracker theo tiến độ %
             const pct = Math.round(((i + 1) / totalLines) * 100);
             if (pct !== lastPct) {
                 elLine.innerText = `${i + 1}/${totalLines}`;
@@ -410,7 +450,7 @@
         }
 
         if (isRunning) {
-            await sendBinaryData(0, 0, 0); 
+            await sendBinaryData(0, 0, 0); // Về gốc
             elStatus.innerText = "Hoàn thành xuất sắc!";
             if (document.getElementById('live-modal').style.display === 'flex') {
                 drawLiveTracking(totalLines);
@@ -436,9 +476,7 @@
     function toggleLiveTracker() {
         modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
         if (modal.style.display === 'flex') {
-            const lines = generatedGcode ? generatedGcode.split('\n') : [];
-            const currentIdx = Math.round((parseInt(document.getElementById('mac_pct').innerText) / 100) * lines.length);
-            drawLiveTracking(currentIdx || 0); 
+            drawLiveTracking(current_mac_line); 
         }
     }
 
@@ -514,7 +552,6 @@
         }
     }
 
-    // --- LOGIC PAN & ZOOM ---
     const container = document.getElementById('preview-container'), wrapper = document.getElementById('pan-zoom-wrapper');
     let scale = 1, pointX = 0, pointY = 0, panning = false, startX = 0, startY = 0;
     function setTransform() { wrapper.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`; }
