@@ -4,6 +4,7 @@ import numpy as np
 import os
 import math
 import re
+import fitz  # Thư viện PyMuPDF để đọc PDF
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -22,14 +23,13 @@ def generate_svg_grid_mm(w_mm, h_mm):
         if i > 0: grid.append(f'<text x="1" y="{i - 1}" fill="#888" font-size="3" font-family="sans-serif">{i}</text>')
     return "".join(grid)
 
-def process_pcb(gray_img, scale, target_width_mm, feedrate, thresh_val, pen_size_mm, z_up, z_down):
+def process_pcb(gray_img, scale_x, scale_y, w_mm, h_mm, feedrate, thresh_val, pen_size_mm, z_up, z_down):
     h, w = gray_img.shape
-    h_mm, w_mm = h * scale, w * scale
     _, thresh = cv2.threshold(gray_img, thresh_val, 255, cv2.THRESH_BINARY_INV)
     gcode_lines = [f"G21\nG90\nG1 F{feedrate}\nG0 Z{z_up}\n"]
     svg_paths = []
     color = "#ffaa00"
-    pen_px = max(1.0, pen_size_mm / scale) 
+    pen_px = max(1.0, pen_size_mm / scale_x) 
 
     contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     for cnt in contours:
@@ -37,16 +37,15 @@ def process_pcb(gray_img, scale, target_width_mm, feedrate, thresh_val, pen_size
         if len(approx) > 2:
             pts = []
             sx, sy = approx[0][0]
-            gx, gy = sx * scale, (h - sy) * scale
-            gcode_lines.append(f"G0 Z{z_up}\nG0 X{gx:.2f} Y{gy:.2f}\nG1 Z{z_down}")
-            pts.append(f"{gx:.2f},{h_mm - gy:.2f}") 
+            gx, gy = sx * scale_x, sy * scale_y
+            gcode_lines.append(f"G0 Z{z_up}\nG0 X{gx:.2f} Y{h_mm - gy:.2f}\nG1 Z{z_down}")
+            pts.append(f"{gx:.2f},{gy:.2f}") 
             for p in approx[1:]:
-                x, y = p[0]
-                x_mm, y_mm = x * scale, y * scale
+                x_mm, y_mm = p[0][0] * scale_x, p[0][1] * scale_y
                 gcode_lines.append(f"G1 X{x_mm:.2f} Y{h_mm - y_mm:.2f}")
                 pts.append(f"{x_mm:.2f},{y_mm:.2f}")
-            gcode_lines.append(f"G1 X{gx:.2f} Y{gy:.2f}")
-            pts.append(f"{gx:.2f},{h_mm - gy:.2f}")
+            gcode_lines.append(f"G1 X{gx:.2f} Y{h_mm - gy:.2f}")
+            pts.append(f"{gx:.2f},{gy:.2f}")
             svg_paths.append(f'<polyline points="{" ".join(pts)}" stroke="{color}" fill="none" stroke-width="{pen_size_mm:.2f}" stroke-linejoin="round" stroke-linecap="round"/>')
 
     step_px = max(1, int(pen_px * 0.7)) 
@@ -70,45 +69,45 @@ def process_pcb(gray_img, scale, target_width_mm, feedrate, thresh_val, pen_size
         for seg in segments:
             x1, x2 = seg
             if not left_to_right: x1, x2 = x2, x1 
-            gx1, gy1 = x1 * scale, (h - y) * scale
-            gx2, gy2 = x2 * scale, (h - y) * scale
-            gcode_lines.append(f"G0 Z{z_up}\nG0 X{gx1:.2f} Y{gy1:.2f}\nG1 Z{z_down}")
-            gcode_lines.append(f"G1 X{gx2:.2f} Y{gy2:.2f}")
-            svg_paths.append(f'<line x1="{gx1:.2f}" y1="{h_mm - gy1:.2f}" x2="{gx2:.2f}" y2="{h_mm - gy2:.2f}" stroke="{color}" stroke-width="{pen_size_mm:.2f}" stroke-linecap="round"/>')
+            gx1, gy1 = x1 * scale_x, y * scale_y
+            gx2, gy2 = x2 * scale_x, y * scale_y
+            gcode_lines.append(f"G0 Z{z_up}\nG0 X{gx1:.2f} Y{h_mm - gy1:.2f}\nG1 Z{z_down}")
+            gcode_lines.append(f"G1 X{gx2:.2f} Y{h_mm - gy2:.2f}")
+            svg_paths.append(f'<line x1="{gx1:.2f}" y1="{gy1:.2f}" x2="{gx2:.2f}" y2="{gy2:.2f}" stroke="{color}" stroke-width="{pen_size_mm:.2f}" stroke-linecap="round"/>')
         left_to_right = not left_to_right 
     gcode_lines.append(f"\nG0 Z{z_up}\nG0 X0 Y0")
     svg = f'<svg viewBox="0 0 {w_mm} {h_mm}" style="width: 100%; overflow: visible; background: #1a1a1a;">{generate_svg_grid_mm(w_mm, h_mm)}{"".join(svg_paths)}</svg>'
     return "\n".join(gcode_lines), svg
 
-def process_edge(gray_img, scale, target_width_mm, feedrate, thresh_val, smooth_val, pen_size_mm, z_up, z_down):
-    h, w = gray_img.shape
-    h_mm, w_mm = h * scale, w * scale
-    _, thresh = cv2.threshold(gray_img, thresh_val, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+def process_edge(gray_img, scale_x, scale_y, w_mm, h_mm, feedrate, thresh_val, smooth_val, pen_size_mm, z_up, z_down):
+    edges = cv2.Canny(gray_img, thresh_val, thresh_val * 2)
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
     gcode_lines = [f"G21\nG90\nG1 F{feedrate}\nG0 Z{z_up}\n"]
     svg_paths = []
     epsilon = float(smooth_val) / 10.0 
+    
     for cnt in contours:
         approx = cv2.approxPolyDP(cnt, epsilon, True)
         if len(approx) > 2:
             pts = []
-            sx_mm, sy_mm = approx[0][0][0] * scale, approx[0][0][1] * scale
+            sx_mm, sy_mm = approx[0][0][0] * scale_x, approx[0][0][1] * scale_y
             gcode_lines.append(f"G0 Z{z_up}\nG0 X{sx_mm:.2f} Y{h_mm - sy_mm:.2f}\nG1 Z{z_down}")
             pts.append(f"{sx_mm:.2f},{sy_mm:.2f}")
             for p in approx[1:]:
-                x_mm, y_mm = p[0][0] * scale, p[0][1] * scale
+                x_mm, y_mm = p[0][0] * scale_x, p[0][1] * scale_y
                 gcode_lines.append(f"G1 X{x_mm:.2f} Y{h_mm - y_mm:.2f}")
                 pts.append(f"{x_mm:.2f},{y_mm:.2f}")
             gcode_lines.append(f"G1 X{sx_mm:.2f} Y{h_mm - sy_mm:.2f}")
             pts.append(f"{sx_mm:.2f},{sy_mm:.2f}")
             svg_paths.append(f'<polyline points="{" ".join(pts)}" stroke="#00f2fe" fill="none" stroke-width="{pen_size_mm:.2f}" stroke-linejoin="round" stroke-linecap="round"/>')
+            
     gcode_lines.append(f"\nG0 Z{z_up}\nG0 X0 Y0")
     svg = f'<svg viewBox="0 0 {w_mm} {h_mm}" style="width: 100%; overflow: visible; background: #1a1a1a;">{generate_svg_grid_mm(w_mm, h_mm)}{"".join(svg_paths)}</svg>'
     return "\n".join(gcode_lines), svg
 
-def process_sketch(gray_img, scale, target_width_mm, feedrate, density, threshold_val, pen_size_mm, z_up, z_down):
+def process_sketch(gray_img, scale_x, scale_y, w_mm, h_mm, feedrate, density, threshold_val, pen_size_mm, z_up, z_down):
     h, w = gray_img.shape
-    h_mm, w_mm = h * scale, w * scale
     spacing = max(2, int(12 - density / 10.0)) 
     gcode_lines = [f"G21\nG90\nG1 F{feedrate}\nG0 Z{z_up}\n"]
     svg_paths = []
@@ -133,8 +132,8 @@ def process_sketch(gray_img, scale, target_width_mm, feedrate, density, threshol
                 cx += dx; cy += dy
             if in_seg and math.dist(seg_start, (cx, cy)) > 3: add_line(seg_start[0], seg_start[1], cx, cy)
     def add_line(x1, y1, x2, y2):
-        x1_mm, y1_mm = x1 * scale, y1 * scale
-        x2_mm, y2_mm = x2 * scale, y2 * scale
+        x1_mm, y1_mm = x1 * scale_x, y1 * scale_y
+        x2_mm, y2_mm = x2 * scale_x, y2 * scale_y
         gcode_lines.append(f"G0 Z{z_up}\nG0 X{x1_mm:.2f} Y{h_mm - y1_mm:.2f}\nG1 Z{z_down}")
         gcode_lines.append(f"G1 X{x2_mm:.2f} Y{h_mm - y2_mm:.2f}")
         svg_paths.append(f'<line x1="{x1_mm:.2f}" y1="{y1_mm:.2f}" x2="{x2_mm:.2f}" y2="{y2_mm:.2f}" stroke="#ff007f" stroke-width="{pen_size_mm:.2f}" stroke-linecap="round"/>')
@@ -144,9 +143,8 @@ def process_sketch(gray_img, scale, target_width_mm, feedrate, density, threshol
     svg = f'<svg viewBox="0 0 {w_mm} {h_mm}" style="width: 100%; overflow: visible; background: #1a1a1a;">{generate_svg_grid_mm(w_mm, h_mm)}{"".join(svg_paths)}</svg>'
     return "\n".join(gcode_lines), svg
 
-def process_spiral(gray_img, scale, target_width_mm, feedrate, density, pen_size_mm, z_up, z_down):
+def process_spiral(gray_img, scale_x, scale_y, w_mm, h_mm, feedrate, density, pen_size_mm, z_up, z_down):
     h, w = gray_img.shape
-    h_mm, w_mm = h * scale, w * scale
     cx, cy = w / 2, h / 2
     max_radius = min(cx, cy) - 2
     num_loops = max(10, int(density))
@@ -161,8 +159,10 @@ def process_spiral(gray_img, scale, target_width_mm, feedrate, density, pen_size
         ix, iy = int(x_base), int(y_base)
         darkness = 1.0 - (gray_img[iy, ix] / 255.0) if (0 <= ix < w and 0 <= iy < h) else 0
         r_wiggled = r + ((max_radius / num_loops) * 0.95 * darkness) * math.sin(theta * 200)
-        x_mm, y_mm = (cx + r_wiggled * math.cos(theta)) * scale, (cy + r_wiggled * math.sin(theta)) * scale
+        
+        x_mm, y_mm = (cx + r_wiggled * math.cos(theta)) * scale_x, (cy + r_wiggled * math.sin(theta)) * scale_y
         svg_points.append(f"{x_mm:.2f},{y_mm:.2f}")
+        
         if is_first:
             gcode_lines.append(f"G0 X{x_mm:.3f} Y{h_mm - y_mm:.3f}\nG1 Z{z_down}")
             is_first = False
@@ -174,41 +174,82 @@ def process_spiral(gray_img, scale, target_width_mm, feedrate, density, pen_size
     svg = f'<svg viewBox="0 0 {w_mm} {h_mm}" style="width: 100%; overflow: visible; background: #1a1a1a;">{generate_svg_grid_mm(w_mm, h_mm)}<polyline points="{points_str}" stroke="#00ff00" fill="none" stroke-width="{pen_size_mm:.2f}" stroke-linejoin="round"/></svg>'
     return "\n".join(gcode_lines), svg
 
-def process_image(img_path, main_mode, art_style, target_width_mm, feedrate, thresh_val, smooth_val, density, pen_size_mm, z_up, z_down, g_scale):
-    img = cv2.imread(img_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+def process_image(file_path, main_mode, art_style, target_width_mm, target_height_mm, feedrate, thresh_val, smooth_val, density, pen_size_mm, z_up, z_down, g_scale):
+    is_pdf = file_path.lower().endswith('.pdf')
+    mm_per_px = None
+    native_w_px = 0
+    native_h_px = 0
     
-    # === TÍNH NĂNG MỚI: TỰ ĐỘNG CẮT PHẦN THỪA (AUTO-CROP) ===
+    if is_pdf:
+        doc = fitz.open(file_path)
+        page = doc.load_page(0)
+        zoom = 4.0 
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        page_w_mm = page.rect.width * 25.4 / 72.0 
+        
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+        if pix.n == 3: gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        else: gray = img
+        mm_per_px = page_w_mm / float(gray.shape[1])
+        native_w_px = gray.shape[1]
+        native_h_px = gray.shape[0]
+    else:
+        img = cv2.imread(file_path)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
     _, mask = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
     coords = cv2.findNonZero(mask)
     if coords is not None:
         x, y, w, h = cv2.boundingRect(coords)
-        pad_x = int(w * 0.02)
-        pad_y = int(h * 0.02)
-        x_start = max(0, x - pad_x)
-        y_start = max(0, y - pad_y)
-        x_end = min(gray.shape[1], x + w + pad_x)
-        y_end = min(gray.shape[0], y + h + pad_y)
-        gray = gray[y_start:y_end, x_start:x_end]
-    # =======================================================
         
-    actual_width_mm = target_width_mm * (g_scale / 100.0)
-    scale = actual_width_mm / gray.shape[1]
+        if is_pdf and main_mode == 'pcb':
+            cropped = gray[y:y+h, x:x+w]
+            actual_width_mm = w * mm_per_px * (g_scale / 100.0)
+            actual_height_mm = h * mm_per_px * (g_scale / 100.0)
+            gray = cropped
+        else:
+            pad_x = int(w * 0.02)
+            pad_y = int(h * 0.02)
+            x_start = max(0, x - pad_x)
+            y_start = max(0, y - pad_y)
+            x_end = min(gray.shape[1], x + w + pad_x)
+            y_end = min(gray.shape[0], y + h + pad_y)
+            cropped = gray[y_start:y_end, x_start:x_end]
+            gray = cropped
+            
+            actual_width_mm = target_width_mm * (g_scale / 100.0)
+            actual_height_mm = actual_width_mm * (gray.shape[0] / gray.shape[1])
+    else:
+        actual_width_mm = target_width_mm * (g_scale / 100.0)
+        actual_height_mm = actual_width_mm * (gray.shape[0] / gray.shape[1])
+        
+    scale_x = actual_width_mm / gray.shape[1]
+    scale_y = actual_height_mm / gray.shape[0]
     
-    if main_mode == 'pcb': return process_pcb(gray, scale, actual_width_mm, feedrate, thresh_val, pen_size_mm, z_up, z_down)
-    if main_mode == 'art' and art_style == 'spiral': return process_spiral(gray, scale, actual_width_mm, feedrate, density, pen_size_mm, z_up, z_down)
-    if main_mode == 'art' and art_style == 'sketch': return process_sketch(gray, scale, actual_width_mm, feedrate, density, thresh_val, pen_size_mm, z_up, z_down)
-    return process_edge(gray, scale, actual_width_mm, feedrate, thresh_val, smooth_val, pen_size_mm, z_up, z_down)
+    if main_mode == 'pcb': 
+        gcode, svg = process_pcb(gray, scale_x, scale_y, actual_width_mm, actual_height_mm, feedrate, thresh_val, pen_size_mm, z_up, z_down)
+    elif main_mode == 'art' and art_style == 'spiral': 
+        gcode, svg = process_spiral(gray, scale_x, scale_y, actual_width_mm, actual_height_mm, feedrate, density, pen_size_mm, z_up, z_down)
+    elif main_mode == 'art' and art_style == 'sketch': 
+        gcode, svg = process_sketch(gray, scale_x, scale_y, actual_width_mm, actual_height_mm, feedrate, density, thresh_val, pen_size_mm, z_up, z_down)
+    else:
+        gcode, svg = process_edge(gray, scale_x, scale_y, actual_width_mm, actual_height_mm, feedrate, thresh_val, smooth_val, pen_size_mm, z_up, z_down)
+        
+    return gcode, svg, actual_width_mm, actual_height_mm, native_w_px, native_h_px
 
 @app.route('/')
 def index(): return render_template('web.html')
 
 @app.route('/generate', methods=['POST'])
 def generate():
-    if 'image' not in request.files: return jsonify({'error': 'Chưa chọn ảnh'})
+    if 'image' not in request.files: return jsonify({'error': 'Chưa chọn file'})
     file = request.files['image']
     mode, style = request.form.get('main_mode', 'art'), request.form.get('art_style', 'edge')
+    
     width = float(request.form.get('target_width', 100))
+    height = float(request.form.get('target_height', 0))
+    
     thresh = int(request.form.get('threshold', 127))
     smooth = float(request.form.get('smoothing', 1))
     dens = float(request.form.get('density', 30))
@@ -220,7 +261,17 @@ def generate():
     
     filepath = os.path.join(UPLOAD_FOLDER, file.filename)
     file.save(filepath)
-    gcode, svg = process_image(filepath, mode, style, width, feed, thresh, smooth, dens, pen_size, z_up, z_down, g_scale)
-    return jsonify({'gcode': gcode, 'svg': svg})
+    
+    gcode, svg, calc_w, calc_h, px_w, px_h = process_image(filepath, mode, style, width, height, feed, thresh, smooth, dens, pen_size, z_up, z_down, g_scale)
+    
+    return jsonify({
+        'gcode': gcode, 
+        'svg': svg,
+        'calc_w': calc_w, 
+        'calc_h': calc_h,
+        'native_px_w': px_w,
+        'native_px_h': px_h
+    })
 
-if __name__ == '__main__': app.run(debug=True, port=7860, host="0.0.0.0")
+# Cổng 7860 là cổng mặc định của Hugging Face Spaces
+if __name__ == '__main__': app.run(debug=False, port=7860, host="0.0.0.0")
